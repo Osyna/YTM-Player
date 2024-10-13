@@ -71,10 +71,6 @@ ymp https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## Acknowledgments
 
 - Thanks to the creators of yt-dlp, mpv, jq, and socat for their fantastic jobs.
