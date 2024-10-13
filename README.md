@@ -47,12 +47,19 @@ Before you begin, ensure you have the following dependencies installed:
 
    Note: Installation commands may vary depending on your operating system. Please refer to the official documentation for each dependency for specific installation instructions.
 
+5. Make the script accessible as a global command:
+   ```
+   sudo ln -s "$(pwd)/ytmplayer.sh" /usr/local/bin/ymp
+   ```
+
+   This creates a symbolic link named `ymp` in `/usr/local/bin`, which is typically in your PATH. You may need to restart your terminal or source your shell configuration file for the changes to take effect.
+
 ## Usage
 
-Run the script with a YouTube URL as an argument:
+You can now run the script from anywhere using the `ymp` command followed by a YouTube URL:
 
 ```
-./ytmplayer.sh https://www.youtube.com/watch?v=dQw4w9WgXcQ
+ymp https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 ### Controls
@@ -64,10 +71,24 @@ Run the script with a YouTube URL as an argument:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 ## Acknowledgments
 
-- Thanks to the creators of yt-dlp, mpv, jq, and socat
+- Thanks to the creators of yt-dlp, mpv, jq, and socat for their fantastic jobs.
 
 ## Support
 
 If you encounter any problems or have any suggestions, please open an issue on the GitHub repository.
+
+## Uninstallation
+
+If you want to remove the global command, you can do so by running:
+
+```
+sudo rm /usr/local/bin/ymp
+```
+
+To completely uninstall YTM-Player, also remove the cloned repository.
