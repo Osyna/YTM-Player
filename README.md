@@ -2,8 +2,6 @@
 
 ![Alt text](screenshot.png?raw=true "YTM Player Screenshot")
 
-[alt text](https://github.com/Osyna/YTM-Player/blob/[main]/screenshot.png?raw=true)
-
 YTM-Player is a Bash script that allows you to play audio from YouTube videos directly in your terminal. It provides a simple interface with play/pause functionality and a progress bar.
 
 ## Features
