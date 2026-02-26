@@ -7,6 +7,7 @@
 # Dependencies: yt-dlp, mpv, jq, socat, bc
 
 # Global variables
+export LC_ALL=C
 URL=""
 SOCKET="/tmp/mpvsocket_$$"
 MPV_PID=""
@@ -162,7 +163,7 @@ run_player() {
         interface=$(cat << EOF
 \033[1;34m▶ YTMPlayer\033[0m
 \033[1;33m$title\033[0m
-$(draw_progress_bar $position $duration) $(format_time $position) / $(format_time $duration)
+$(printf "\r%s %s / %s\033[K" "$(draw_progress_bar $position $duration)" "$(format_time $position)" "$(format_time $duration)")
 Status: $([ "$paused" = "true" ] && echo "\033[1;31m⏸ PAUSED \033[0m" || echo "\033[1;32m▶ PLAYING\033[0m")
 EOF
 )
@@ -193,8 +194,9 @@ EOF
         fi
 
         # Clear screen and update the interface
-        clear_screen
+        tput cup 0 0
         echo -en "$interface"
+	tput ed
 
         # Move cursor to a safe position
         tput cup $(($(tput lines)-1)) 0
