@@ -34,13 +34,8 @@ because `bc` wasn't installed. Four tools glued together with a format string,
 and the whole thing fell over on the one nobody thinks about.
 
 So it's Rust now: one binary, JSON parsed natively, the socket a plain
-`UnixStream`, the arithmetic `f64`. mpv and yt-dlp stay, because reimplementing
-YouTube extraction and video decoding isn't a dependency question — it's a
-rewrite of two large projects, and yt-dlp in particular is a moving target
-against YouTube's obfuscation churn. Everything else is gone.
+`UnixStream`, the arithmetic `f64`. mpv and yt-dlp.
 
-While it was being rewritten it also picked up the two things I actually wanted
-from it: video in the terminal, and a download key.
 
 ## What it does
 
@@ -168,7 +163,7 @@ escape sequence and no UTF-8 character is half-written. Both painters now go
 through the same lock, and a short write can't hurt anyone because nothing else
 is painting while it finishes.
 
-### Resource footprint
+### Footprint
 
 | | RSS |
 |---|---|
@@ -176,27 +171,11 @@ is painting while it finishes.
 | mpv, audio-only (the default) | 88.5 MB |
 | mpv, while you're watching | 106 MB |
 
-Two things got measured and then cut. mpv's on-screen controller is a Lua
-overlay that can never be visible in a terminal, and loading it costs **8.3 MB**
-of interpreter and font machinery — `--osc=no`. And not attaching a video track
-until `v` is pressed saves another **5.9 MB**. Together that took a playing
-session from 101.7 MB to 88.5 MB.
-
-Resolution, for the record, is *not* what costs memory: 144p and 480p measured
-within 0.1 MB of each other. Whether a video track exists at all is what
-matters, which is why the default is that it doesn't.
 
 ### Changes from the Bash version
 
-- `jq`, `socat` and `bc` are gone. A missing `bc` used to stop the player
-  starting at all, which is how this rewrite began.
-- The old progress bar was a `printf "%.2f %.2f"` that crashed to
-  `invalid number` whenever mpv answered with something that was neither `null`
-  nor a number, spamming the terminal a hundred times a second. Positions are
-  `Option<f64>` now; there is no format string left to feed a stray value to.
-- Quitting by any route — `q`, `Ctrl+C`, or mpv exiting on its own — restores
-  the terminal and leaves no stray mpv and no socket in `/tmp`.
-- `v`, `d`, `Tab`, volume and mouse support are new.
+- `jq`, `socat` and `bc` are gone
+- `v`, `d`, `Tab`, volume and mouse support
 
 The full list is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -206,14 +185,11 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 sudo rm /usr/local/bin/ymp
 ```
 
-Then delete the clone, if you made one. Downloads live in `downloads/` next to
-wherever you ran it, and are left alone.
-
 ## Contributing
 
-Pull requests are welcome. `cargo clippy --release --all-targets` and
-`cargo test --release` both have to stay clean — CI runs them, with warnings
-denied, on every push.
+Pull requests are welcome. 
+`cargo clippy --release --all-targets`
+`cargo test --release`
 
 ## Thanks
 
@@ -225,8 +201,6 @@ denied, on every push.
 - [@ConttiDev](https://github.com/ConttiDev), who fixed the flicker in the Bash
   version back when there was a Bash version.
 
-The screenshots are [Big Buck Bunny](https://peach.blender.org/), © Blender
-Foundation, CC-BY 3.0.
 
 ## License
 
