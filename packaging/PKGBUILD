@@ -1,0 +1,33 @@
+# Maintainer: Irvin <7606712+Osyna@users.noreply.github.com>
+#
+# Template. The copy attached to each GitHub release has pkgver and both sha256sums
+# filled in by CI; this one carries SKIP so it stays valid between releases.
+
+pkgname=ytmplayer-bin
+_pkgname=ytmplayer
+pkgver=3.0.0
+pkgrel=1
+pkgdesc="Terminal YouTube player: audio in a text UI, true-colour ASCII video on demand, background downloads"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Osyna/YTM-Player"
+license=('PolyForm-Noncommercial-1.0.0')
+depends=('mpv' 'yt-dlp')
+optdepends=('ffmpeg: merge separate video and audio streams when downloading above MP3')
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+# The binary is statically linked against musl and already stripped.
+options=('!strip' '!debug')
+
+source_x86_64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64-linux.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-aarch64-linux.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    cd "$srcdir/$_pkgname-$pkgver-$CARCH-linux"
+    install -Dm755 "$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+    install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$_pkgname/CHANGELOG.md"
+    # Arch looks for the licence under $pkgname, not the binary name.
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

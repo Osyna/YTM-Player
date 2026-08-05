@@ -16,7 +16,8 @@ track down to disk in the background.
   <a href="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml"><img src="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Osyna/YTM-Player/releases/latest"><img src="https://img.shields.io/github/v/release/Osyna/YTM-Player?style=flat-square&color=7c3aed" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/built%20with-Rust-f74c00?style=flat-square" alt="Built with Rust">
-  <img src="https://img.shields.io/badge/binary-730%20KB-blue?style=flat-square" alt="730 KB binary">
+  <img src="https://img.shields.io/badge/binary-836%20KB%20static-blue?style=flat-square" alt="836 KB static binary">
+  <img src="https://img.shields.io/badge/packages-deb%20%7C%20rpm%20%7C%20pacman-e05d44?style=flat-square" alt="deb, rpm and pacman packages">
   <img src="https://img.shields.io/badge/runtime%20deps-mpv%20%2B%20yt--dlp-1793d1?style=flat-square" alt="mpv and yt-dlp">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-a855f7?style=flat-square" alt="PolyForm Noncommercial 1.0.0"></a>
 </p>
@@ -62,45 +63,54 @@ So it's Rust now: one binary, JSON parsed natively, the socket a plain
 
 ## Getting started
 
-You need **mpv** and **yt-dlp** on your `PATH`. `ffmpeg` is optional — with it,
-downloads above MP3 merge separate video and audio streams into the best
-available quality; without it they fall back to a single pre-muxed stream.
+Grab a package for your distribution from the
+[latest release](https://github.com/Osyna/YTM-Player/releases/latest). Each one pulls in
+**mpv** and **yt-dlp** for you, and suggests **ffmpeg** — optional, and only used to merge
+separate video and audio streams when downloading above MP3.
 
 ```sh
-# Arch
-sudo pacman -S mpv yt-dlp ffmpeg
-# Debian / Ubuntu
-sudo apt install mpv yt-dlp ffmpeg
+# Arch, Manjaro, EndeavourOS
+sudo pacman -U ytmplayer-bin-3.0.0-1-x86_64.pkg.tar.zst
+
+# Debian, Ubuntu, Mint, Pop!_OS
+sudo apt install ./ytmplayer_3.0.0-1_amd64.deb
+
+# Fedora, RHEL, openSUSE
+sudo dnf install ./ytmplayer-3.0.0-1.x86_64.rpm
 ```
 
-Then grab a binary from [Releases](https://github.com/Osyna/YTM-Player/releases/latest).
-The `musl` build is fully static and runs on any x86-64 Linux:
+On Arch, `makepkg -si` against the attached `PKGBUILD` works too, and builds for aarch64.
+
+Any other distribution — the tarball is one static binary that needs no libraries. Install
+`mpv` and `yt-dlp` yourself:
 
 ```sh
-curl -L -o ymp https://github.com/Osyna/YTM-Player/releases/latest/download/ytmplayer-x86_64-linux-musl
-chmod +x ymp
-sudo mv ymp /usr/local/bin/ymp
+curl -LO https://github.com/Osyna/YTM-Player/releases/latest/download/ytmplayer-3.0.0-x86_64-linux.tar.gz
+tar xzf ytmplayer-3.0.0-x86_64-linux.tar.gz
+sudo install -m755 ytmplayer-3.0.0-x86_64-linux/ytmplayer /usr/local/bin/
 ```
 
-Or build it yourself — no C toolchain, no system libraries, four dependencies:
+`aarch64` builds of every format are attached too. Checksums in `SHA256SUMS`.
+
+Or build it — no C toolchain, no system libraries, four dependencies:
 
 ```sh
 git clone https://github.com/Osyna/YTM-Player
 cd YTM-Player
 cargo build --release
-sudo ln -s "$(pwd)/target/release/ytmplayer" /usr/local/bin/ymp
+sudo install -m755 target/release/ytmplayer /usr/local/bin/
 ```
 
 ## Using it
 
 ```sh
-ymp https://www.youtube.com/watch?v=dQw4w9WgXcQ
+ytmplayer https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Playlist URLs need quoting, or the shell will background the job on the `&`:
 
 ```sh
-ymp "https://www.youtube.com/watch?v=XnG3YWYMY-I&list=RDQMxUfpwjvstDY&start_radio=1"
+ytmplayer "https://www.youtube.com/watch?v=XnG3YWYMY-I&list=RDQMxUfpwjvstDY&start_radio=1"
 ```
 
 | Key | Action |
@@ -182,7 +192,10 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 ## Uninstall
 
 ```sh
-sudo rm /usr/local/bin/ymp
+sudo pacman -Rns ytmplayer-bin   # Arch
+sudo apt remove ytmplayer        # Debian / Ubuntu
+sudo dnf remove ytmplayer        # Fedora / RHEL
+sudo rm /usr/local/bin/ytmplayer # tarball or built from source
 ```
 
 ## Contributing

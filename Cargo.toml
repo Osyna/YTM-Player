@@ -4,6 +4,7 @@ version = "3.0.0"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Osyna/YTM-Player"
+description = "Terminal YouTube player: audio in a text UI, true-colour ASCII video on demand, background downloads"
 
 [dependencies]
 crossterm = "0.29.0"
@@ -17,3 +18,37 @@ serde_json = "1.0.151"
 lto = true
 codegen-units = 1
 strip = true
+
+# Packaging. Release builds target musl and link statically, so the packages declare no library
+# dependencies at all - only the two programs the player actually shells out to.
+[package.metadata.deb]
+maintainer = "Irvin <7606712+Osyna@users.noreply.github.com>"
+copyright = "Copyright Irvin \"Osyna\" (https://github.com/Osyna/YTM-Player)"
+# Puts the real licence text into /usr/share/doc/ytmplayer/copyright, which Debian policy wants.
+license-file = "LICENSE"
+section = "sound"
+priority = "optional"
+depends = "mpv, yt-dlp"
+recommends = "ffmpeg"
+extended-description = """\
+Plays YouTube audio in a small text UI with a live progress bar, and renders the video as \
+true-colour ASCII in the same terminal on a keypress, without interrupting playback. Tracks \
+can be saved to disk in the background. Drives mpv and yt-dlp over their native interfaces."""
+assets = [
+    ["target/release/ytmplayer", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/ytmplayer/README.md", "644"],
+    ["CHANGELOG.md", "usr/share/doc/ytmplayer/CHANGELOG.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Terminal YouTube player with true-colour ASCII video"
+# The binary is statically linked, so rpm's ELF scan has nothing true to say: left on, it
+# invents a glibc dynamic-loader requirement the package does not have.
+auto-req = "no"
+requires = { mpv = "*", yt-dlp = "*" }
+assets = [
+    { source = "target/release/ytmplayer", dest = "/usr/bin/ytmplayer", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/ytmplayer/README.md", mode = "644", doc = true },
+    { source = "CHANGELOG.md", dest = "/usr/share/doc/ytmplayer/CHANGELOG.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/ytmplayer/LICENSE", mode = "644", doc = true },
+]

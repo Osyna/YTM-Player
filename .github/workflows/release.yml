@@ -2,30 +2,30 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  # Builds every artifact without publishing, so the packaging can be tested before tagging.
   workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # Static musl builds. Nothing here links against a system library, so one binary per
+  # architecture runs on every distribution, and the packages only declare the two
+  # programs the player actually shells out to.
   build:
+    name: build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            asset: ytmplayer-x86_64-linux-gnu
-          - target: x86_64-unknown-linux-musl
-            asset: ytmplayer-x86_64-linux-musl
-
+          - { target: x86_64-unknown-linux-musl,  arch: x86_64 }
+          - { target: aarch64-unknown-linux-musl, arch: aarch64 }
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -35,30 +35,129 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binary
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build
+        # rust-lld links both targets, so no C cross-toolchain is needed.
+        env:
+          RUSTFLAGS: -C linker=rust-lld
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Prepare artifact
-        run: cp target/${{ matrix.target }}/release/ytmplayer ${{ matrix.asset }}
+      - name: Package
+        run: |
+          set -eux
+          V=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          D=ytmplayer-$V-${{ matrix.arch }}-linux
+          mkdir -p dist "$D"
+          cp target/${{ matrix.target }}/release/ytmplayer README.md CHANGELOG.md LICENSE "$D/"
+          tar -czf "dist/$D.tar.gz" "$D"
+          cargo deb --no-build --target ${{ matrix.target }} --output dist
+          cargo generate-rpm --target ${{ matrix.target }} --output dist
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: pkg-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Arch's own package format, built with makepkg in a real Arch container against the
+  # tarball produced above.
+  archlinux:
+    name: build arch package
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Prepare container
+        run: pacman -Sy --noconfirm --needed git
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: dist
+
+      - name: makepkg
+        run: |
+          set -eux
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          useradd -m builder
+          install -d -o builder -g builder /build
+          cp "dist/ytmplayer-$V-x86_64-linux.tar.gz" packaging/PKGBUILD /build/
+          # Point pkgver at Cargo.toml and the source at the local tarball, so the package
+          # is built from the exact bytes that will be published.
+          sed -i -e "s|^pkgver=.*|pkgver=$V|" \
+                 -e "s|^source_x86_64=.*|source_x86_64=(\"\$_pkgname-\$pkgver-x86_64-linux.tar.gz\")|" \
+                 /build/PKGBUILD
+          chown -R builder:builder /build
+          su builder -c 'cd /build && makepkg -f --noconfirm --nodeps'
+          mkdir -p out && cp /build/*.pkg.tar.zst out/
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-archlinux
+          path: out/*
+          if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build, archlinux]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: dist
+
+      - name: Fill in the PKGBUILD and checksum everything
+        run: |
+          set -eux
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          X=$(sha256sum "dist/ytmplayer-$V-x86_64-linux.tar.gz"  | cut -d' ' -f1)
+          A=$(sha256sum "dist/ytmplayer-$V-aarch64-linux.tar.gz" | cut -d' ' -f1)
+          sed -e "s|^pkgver=.*|pkgver=$V|" \
+              -e "s|^sha256sums_x86_64=.*|sha256sums_x86_64=('$X')|" \
+              -e "s|^sha256sums_aarch64=.*|sha256sums_aarch64=('$A')|" \
+              packaging/PKGBUILD > dist/PKGBUILD
+          cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Compose release notes
+        run: |
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          cat > notes.md <<EOF
+          Needs \`mpv\` and \`yt-dlp\` installed; \`ffmpeg\` is optional and only used to merge
+          separate video and audio streams when downloading above the MP3 tier. Every package
+          declares those for you.
+
+          ### Install
+
+          **Arch** — \`sudo pacman -U ytmplayer-bin-$V-1-x86_64.pkg.tar.zst\`
+          (or \`makepkg -si\` with the attached \`PKGBUILD\`, which builds for x86_64 and aarch64)
+
+          **Debian / Ubuntu / Mint** — \`sudo apt install ./ytmplayer_$V-1_amd64.deb\`
+
+          **Fedora / RHEL / openSUSE** — \`sudo dnf install ./ytmplayer-$V-1.x86_64.rpm\`
+
+          **Any other distribution** — extract \`ytmplayer-$V-x86_64-linux.tar.gz\` and put
+          \`ytmplayer\` on your PATH. It is statically linked against musl, so it needs no
+          libraries at all.
+
+          \`aarch64\` builds of every format are attached for ARM machines. \`SHA256SUMS\` covers
+          all of them.
+          EOF
+          cat notes.md
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ytmplayer-x86_64-linux-gnu/ytmplayer-x86_64-linux-gnu
-            ytmplayer-x86_64-linux-musl/ytmplayer-x86_64-linux-musl
+          files: dist/*
+          body_path: notes.md
           generate_release_notes: true
-          draft: false
-          prerelease: false

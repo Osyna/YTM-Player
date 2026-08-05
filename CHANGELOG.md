@@ -30,15 +30,21 @@ This is a rewrite, so everything below is relative to the 2.x shell script.
   status line to toggle play/pause.
 - **Playlist navigation with `n` / `b`,** with the position shown as `4/100`
   and a hint line while the next track loads.
-- **Prebuilt binaries** attached to every tagged release — a glibc build and a
-  fully static musl build that runs on any x86-64 Linux.
+- **Distribution packages** attached to every tagged release: `.pkg.tar.zst`
+  and a `PKGBUILD` for Arch, `.deb` for Debian and Ubuntu, `.rpm` for Fedora,
+  RHEL and openSUSE, and a plain tarball for everything else. Each one declares
+  `mpv` and `yt-dlp` as dependencies and suggests `ffmpeg`, so the package
+  manager installs what the player needs. Built for `x86_64` and `aarch64`,
+  statically linked against musl so they depend on no system library at all,
+  and listed in a `SHA256SUMS` file.
 - **CI** on every push: formatting, Clippy with warnings denied, tests, release
   build.
 
 ### Changed
 
-- **Rewritten in Rust** as one binary. 2,524 lines across six modules, 730 KB
-  built (840 KB static), 35 crates in the tree and four direct dependencies.
+- **Rewritten in Rust** as one binary. 2,524 lines across six modules, 731 KB
+  built (836 KB as a static musl binary), 35 crates in the tree and four direct
+  dependencies.
 - **Audio-only by default.** Nothing decodes a picture until you press `v`. One
   yt-dlp call returns both the audio and a low-resolution video URL; only the
   audio is handed to mpv, and the video URL is held back until it is wanted.
