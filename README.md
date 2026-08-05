@@ -1,92 +1,245 @@
+<div align="center">
+
+<img src="assets/logo.png" width="120" alt="YTM-Player">
+
 # YTM-Player
 
-![Alt text](screenshot.png?raw=true "YTM Player Screenshot")
+**Paste a YouTube URL. Get the audio in your terminal — and the picture too, if you ask for it.**
 
-YTM-Player is a Bash script that allows you to play audio from YouTube videos directly in your terminal. It provides a simple interface with play/pause functionality and a progress bar.
+A terminal YouTube player written in Rust. One binary, no runtime of its own:
+it drives [mpv](https://mpv.io) and [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+over their native interfaces, streams audio into a small text UI, renders the
+video as true-colour ASCII in the same terminal on a keypress, and pulls the
+track down to disk in the background.
 
-## Features
+<p>
+  <a href="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml"><img src="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Osyna/YTM-Player/releases/latest"><img src="https://img.shields.io/github/v/release/Osyna/YTM-Player?style=flat-square&color=7c3aed" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/built%20with-Rust-f74c00?style=flat-square" alt="Built with Rust">
+  <img src="https://img.shields.io/badge/binary-730%20KB-blue?style=flat-square" alt="730 KB binary">
+  <img src="https://img.shields.io/badge/runtime%20deps-mpv%20%2B%20yt--dlp-1793d1?style=flat-square" alt="mpv and yt-dlp">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-a855f7?style=flat-square" alt="PolyForm Noncommercial 1.0.0"></a>
+</p>
 
-- Play audio from YouTube videos without video playback
-- Simple terminal-based user interface
-- Play/Pause functionality
-- Progress bar display
-- Displays current track title
+<img src="assets/screenshot-video.png" width="820" alt="Big Buck Bunny playing as true-colour ASCII video with the progress bar and controls pinned below it">
 
-## Prerequisites
+</div>
 
-Before you begin, ensure you have the following dependencies installed:
+---
 
-- yt-dlp
-- mpv
-- jq
-- socat
-- bc
+This started as a Bash script, and for a while that was fine — `mpv` did the
+playing, `socat` poked its IPC socket, `jq` read the answers back and `bc` did
+the arithmetic for the progress bar. Then one day it wouldn't start at all,
+because `bc` wasn't installed. Four tools glued together with a format string,
+and the whole thing fell over on the one nobody thinks about.
 
-## Installation
+So it's Rust now: one binary, JSON parsed natively, the socket a plain
+`UnixStream`, the arithmetic `f64`. mpv and yt-dlp stay, because reimplementing
+YouTube extraction and video decoding isn't a dependency question — it's a
+rewrite of two large projects, and yt-dlp in particular is a moving target
+against YouTube's obfuscation churn. Everything else is gone.
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/Osyna/YTM-Player.git
-   ```
+While it was being rewritten it also picked up the two things I actually wanted
+from it: video in the terminal, and a download key.
 
-2. Change to the project directory:
-   ```
-   cd YTM-Player
-   ```
+## What it does
 
-3. Make the script executable:
-   ```
-   chmod +x ytmplayer.sh
-   ```
+- **Audio playback** with a live progress bar, track title, clock and volume.
+- **Audio-only by default.** Nothing decodes a picture until you ask for one, so
+  an idle session never touches a video frame.
+- **`v` puts the video in your terminal** — true-colour half-blocks through
+  mpv's built-in `tct` renderer, at 144p by default. Playback doesn't stop,
+  restart or re-buffer; the picture is a second track handed to the mpv that is
+  already running. Press `v` again and the terminal comes back, with the audio
+  never having noticed.
+- **`d` saves the current track** into `downloads/` in the background, with a
+  live percentage. At the default MP3 tier it's instant and needs no network at
+  all — the audio was already captured while it streamed past.
+- **`Tab` cycles quality**: `MP3 → 480p → 720p → 1080p → Best`. It sets what `d`
+  writes, and anything above MP3 also raises the resolution the next `v` asks
+  for.
+- **Playlists** (`list=` URLs) are expanded and navigable with `n` / `b`, with
+  the position shown as `4/100`.
+- **The mouse works.** Click the progress bar to seek there; click the status
+  line to toggle play/pause.
 
-4. Install dependencies (Ubuntu/Debian example):
-   ```
-   sudo apt update
-   sudo apt install mpv jq socat bc
-   sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-   sudo chmod a+rx /usr/local/bin/yt-dlp
-   ```
+<img src="assets/screenshot-text.png" width="820" alt="The default text UI: title, progress bar, status line, controls and cache state">
 
-   Note: Installation commands may vary depending on your operating system. Please refer to the official documentation for each dependency for specific installation instructions.
+## Getting started
 
-5. Make the script accessible as a global command:
-   ```
-   sudo ln -s "$(pwd)/ytmplayer.sh" /usr/local/bin/ymp
-   ```
+You need **mpv** and **yt-dlp** on your `PATH`. `ffmpeg` is optional — with it,
+downloads above MP3 merge separate video and audio streams into the best
+available quality; without it they fall back to a single pre-muxed stream.
 
-   This creates a symbolic link named `ymp` in `/usr/local/bin`, which is typically in your PATH. You may need to restart your terminal or source your shell configuration file for the changes to take effect.
-
-## Usage
-
-You can now run the script from anywhere using the `ymp` command followed by a YouTube URL:
-
+```sh
+# Arch
+sudo pacman -S mpv yt-dlp ffmpeg
+# Debian / Ubuntu
+sudo apt install mpv yt-dlp ffmpeg
 ```
+
+Then grab a binary from [Releases](https://github.com/Osyna/YTM-Player/releases/latest).
+The `musl` build is fully static and runs on any x86-64 Linux:
+
+```sh
+curl -L -o ymp https://github.com/Osyna/YTM-Player/releases/latest/download/ytmplayer-x86_64-linux-musl
+chmod +x ymp
+sudo mv ymp /usr/local/bin/ymp
+```
+
+Or build it yourself — no C toolchain, no system libraries, four dependencies:
+
+```sh
+git clone https://github.com/Osyna/YTM-Player
+cd YTM-Player
+cargo build --release
+sudo ln -s "$(pwd)/target/release/ytmplayer" /usr/local/bin/ymp
+```
+
+## Using it
+
+```sh
 ymp https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-### Controls
+Playlist URLs need quoting, or the shell will background the job on the `&`:
 
-- `p`: Toggle Play/Pause
-- `q`: Quit the player
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Acknowledgments
-
-- Thanks to the creators of yt-dlp, mpv, jq, and socat for their fantastic jobs.
-
-## Support
-
-If you encounter any problems or have any suggestions, please open an issue on the GitHub repository.
-
-## Uninstallation
-
-If you want to remove the global command, you can do so by running:
-
+```sh
+ymp "https://www.youtube.com/watch?v=XnG3YWYMY-I&list=RDQMxUfpwjvstDY&start_radio=1"
 ```
+
+| Key | Action |
+|---|---|
+| `p` | Play / pause |
+| `h` / `l` | Seek back / forward 5s |
+| `j` / `k` | Volume down / up |
+| `n` / `b` | Next / previous track (playlists) |
+| `v` | Toggle ASCII video |
+| `d` | Download the current track (press again to cancel) |
+| `Tab` | Cycle quality: `MP3 → 480p → 720p → 1080p → Best` |
+| `q` or `Ctrl+C` | Quit |
+
+Click the progress bar to seek to that point; click the status line to toggle
+play/pause.
+
+<img src="assets/screenshot-download.png" width="820" alt="A download in progress, showing a live percentage in the status line">
+
+## How it works
+
+### Audio first, a picture only when asked
+
+One yt-dlp call resolves a track and returns **both** URLs — full-quality audio
+and a low-resolution video. mpv is handed only the audio and started with
+`--no-ytdl`, so it never re-extracts anything and never demuxes a picture. The
+video URL is kept in our pocket.
+
+Press `v` and that URL is handed to the running mpv as an extra track. That is
+why the toggle is instant and playback doesn't so much as hiccup: no new
+process, no re-resolve, no seek back to where you were.
+
+It also means resolution is decoupled from playback. `Tab` up to 720p and the
+next `v` resolves and swaps the video track underneath you, while the same audio
+keeps playing.
+
+### Downloads
+
+mpv writes the audio it is already streaming to a temp file as it goes. At the
+MP3 default, `d` therefore has the whole track on disk the moment you press it —
+ffmpeg transcodes the local file and there is no second trip to YouTube. Raise
+the tier above MP3 and `d` becomes a real download, because the live stream is
+audio and what you asked for isn't.
+
+### Sharing a terminal with mpv
+
+mpv's `tct` renderer paints the terminal directly, which makes it fast and makes
+it a problem: for a while both mpv and the status bar were writing to the same
+tty. A tty makes a single `write` atomic against other writers, so that looked
+safe — but a pty that mpv is flooding at megabytes a second is usually close to
+full, and then the kernel takes only part of a larger write. The rest goes out
+in a second syscall, with mpv free to paint in the gap.
+
+The result was half a status bar stranded in the middle of the picture, and
+once, a cursor move chopped after `ESC [ 29;1` that printed its lone trailing
+`H` on screen as a literal character.
+
+So mpv doesn't hold the terminal any more. Its output comes to us on a pipe and
+is forwarded by the one writer that owns the screen, cut only at points where no
+escape sequence and no UTF-8 character is half-written. Both painters now go
+through the same lock, and a short write can't hurt anyone because nothing else
+is painting while it finishes.
+
+### Resource footprint
+
+| | RSS |
+|---|---|
+| `ytmplayer` itself | **2.8 MB** |
+| mpv, audio-only (the default) | 88.5 MB |
+| mpv, while you're watching | 106 MB |
+
+Two things got measured and then cut. mpv's on-screen controller is a Lua
+overlay that can never be visible in a terminal, and loading it costs **8.3 MB**
+of interpreter and font machinery — `--osc=no`. And not attaching a video track
+until `v` is pressed saves another **5.9 MB**. Together that took a playing
+session from 101.7 MB to 88.5 MB.
+
+Resolution, for the record, is *not* what costs memory: 144p and 480p measured
+within 0.1 MB of each other. Whether a video track exists at all is what
+matters, which is why the default is that it doesn't.
+
+### Changes from the Bash version
+
+- `jq`, `socat` and `bc` are gone. A missing `bc` used to stop the player
+  starting at all, which is how this rewrite began.
+- The old progress bar was a `printf "%.2f %.2f"` that crashed to
+  `invalid number` whenever mpv answered with something that was neither `null`
+  nor a number, spamming the terminal a hundred times a second. Positions are
+  `Option<f64>` now; there is no format string left to feed a stray value to.
+- Quitting by any route — `q`, `Ctrl+C`, or mpv exiting on its own — restores
+  the terminal and leaves no stray mpv and no socket in `/tmp`.
+- `v`, `d`, `Tab`, volume and mouse support are new.
+
+The full list is in [CHANGELOG.md](CHANGELOG.md).
+
+## Uninstall
+
+```sh
 sudo rm /usr/local/bin/ymp
 ```
 
-To completely uninstall YTM-Player, also remove the cloned repository.
+Then delete the clone, if you made one. Downloads live in `downloads/` next to
+wherever you ran it, and are left alone.
+
+## Contributing
+
+Pull requests are welcome. `cargo clippy --release --all-targets` and
+`cargo test --release` both have to stay clean — CI runs them, with warnings
+denied, on every push.
+
+## Thanks
+
+- **[mpv](https://mpv.io)** — decodes and plays the stream, and draws the ASCII
+  video via its own `tct` output. This project is mostly a nice way to talk to
+  it.
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — resolves URLs and playlists
+  to something playable, and keeps doing so as YouTube keeps changing its mind.
+- [@ConttiDev](https://github.com/ConttiDev), who fixed the flicker in the Bash
+  version back when there was a Bash version.
+
+The screenshots are [Big Buck Bunny](https://peach.blender.org/), © Blender
+Foundation, CC-BY 3.0.
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE). Use it, change it, share it, build on
+it — for anything that isn't commercial. Personal use, hobby projects, private
+entertainment, study and research are named in the licence, as are schools,
+charities, public research bodies and government institutions. Selling it, or
+using it to run a business, is not covered.
+
+That makes it source-available rather than open source: the OSI definition
+doesn't allow a field-of-use restriction, so there's no OSI badge here. If you
+want to use it commercially, ask me.
+
+mpv and yt-dlp are separate programs YTM-Player talks to over an IPC socket and
+the command line. It doesn't link against either, so their licences govern them
+and this one governs the code in this repository.
