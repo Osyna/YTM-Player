@@ -4,13 +4,17 @@ version = "3.0.0"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Osyna/YTM-Player"
-description = "Terminal YouTube player: audio in a text UI, true-colour ASCII video on demand, background downloads"
+description = "Terminal music player for YouTube, SoundCloud, Spotify and local files: a fully clickable hacker TUI with native audio scopes, true-colour ASCII video, a play queue and playlist downloads"
 
 [dependencies]
 crossterm = "0.29.0"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 parking_lot = "0.12.5"
+ratatui = "0.30.2"
 serde_json = "1.0.151"
+# Already in the tree through ratatui; used directly so button/status geometry counts
+# display cells, not chars (⚡ and friends are two cells wide).
+unicode-width = "0.2"
 
 [profile.release]
 # A single codegen unit plus cross-crate inlining: the binary is small enough that the extra

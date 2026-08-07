@@ -4,25 +4,26 @@
 
 # YTM-Player
 
-**Paste a YouTube URL. Get the audio in your terminal — and the picture too, if you ask for it.**
+**Paste a link from YouTube, SoundCloud, or Spotify. Get the audio in your terminal — and the picture too, if you ask for it.**
 
-A terminal YouTube player written in Rust. One binary, no runtime of its own:
-it drives [mpv](https://mpv.io) and [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-over their native interfaces, streams audio into a small text UI, renders the
-video as true-colour ASCII in the same terminal on a keypress, and pulls the
-track down to disk in the background.
+A terminal music player written in Rust. One binary, no runtime of its own: it
+drives [mpv](https://mpv.io) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) over
+their native interfaces to play YouTube and SoundCloud — and Spotify links, by
+matching their tracks to YouTube. Audio streams into a small text UI, the video
+renders as true-colour ASCII in the same terminal on a keypress, and tracks pull
+down to disk in the background.
 
 <p>
   <a href="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml"><img src="https://github.com/Osyna/YTM-Player/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Osyna/YTM-Player/releases/latest"><img src="https://img.shields.io/github/v/release/Osyna/YTM-Player?style=flat-square&color=7c3aed" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/built%20with-Rust-f74c00?style=flat-square" alt="Built with Rust">
-  <img src="https://img.shields.io/badge/binary-836%20KB%20static-blue?style=flat-square" alt="836 KB static binary">
+  <img src="https://img.shields.io/badge/binary-1.2%20MB%20static-blue?style=flat-square" alt="1.2 MB static binary">
   <img src="https://img.shields.io/badge/packages-deb%20%7C%20rpm%20%7C%20pacman-e05d44?style=flat-square" alt="deb, rpm and pacman packages">
   <img src="https://img.shields.io/badge/runtime%20deps-mpv%20%2B%20yt--dlp-1793d1?style=flat-square" alt="mpv and yt-dlp">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-a855f7?style=flat-square" alt="PolyForm Noncommercial 1.0.0"></a>
 </p>
 
-<img src="assets/screenshot-video.png" width="820" alt="Big Buck Bunny playing as true-colour ASCII video with the progress bar and controls pinned below it">
+<img src="assets/screenshot-video.png" width="820" alt="True-colour ASCII video with the full player transport - title, progress, icon buttons and status bar - pinned below it">
 
 </div>
 
@@ -44,29 +45,75 @@ So it's Rust now: one binary, JSON parsed natively, the socket a plain
 - **Audio-only by default.** Nothing decodes a picture until you ask for one, so
   an idle session never touches a video frame.
 - **`v` puts the video in your terminal** — true-colour half-blocks through
-  mpv's built-in `tct` renderer, at 144p by default. Playback doesn't stop,
-  restart or re-buffer; the picture is a second track handed to the mpv that is
-  already running. Press `v` again and the terminal comes back, with the audio
-  never having noticed.
+  mpv's built-in `tct` renderer, at the quality you picked in settings (480p by
+  default). Playback doesn't stop, restart or re-buffer; the picture is a second
+  track handed to the mpv that is already running, and the full player transport
+  — title, progress, buttons, status bar — stays pinned below it. Press `v`
+  again and the terminal comes back, with the audio never having noticed.
+- **`c` cycles live scopes, drawn natively in the TUI** — a 16-band spectrum
+  analyzer with falling peak caps, a stereo braille waveform, and broadcast-style
+  VU meters with peak-hold needles. No capture device, no loopback, no extra
+  process: a transparent tap in mpv's own filter chain measures the audio it is
+  already decoding and streams levels to the renderers ~45 times a second, so
+  the picture is always in sync — and the scopes live *inside* the player UI,
+  next to the volume rail and the queue, instead of taking the screen over.
 - **`d` saves the current track** into `downloads/` in the background, with a
   live percentage. At the default MP3 tier it's instant and needs no network at
   all — the audio was already captured while it streamed past.
-- **`Tab` cycles quality**: `MP3 → 480p → 720p → 1080p → Best`. It sets what `d`
-  writes, and anything above MP3 also raises the resolution the next `v` asks
-  for.
-- **Playlists** (`list=` URLs) are expanded and navigable with `n` / `b`, with
-  the position shown as `4/100`.
-- **The mouse works.** Click the progress bar to seek there; click the status
-  line to toggle play/pause.
+- **`o` adds whatever you paste** — a link or a local path, resolved in the
+  background and queued right after the current track. Launched with no
+  arguments at all, the player opens on a URL bar instead: paste, Enter, play.
+- **Clipboard watch (off by default).** Flip it on in settings and any YouTube,
+  SoundCloud or Spotify link you copy anywhere on the system queues itself as
+  the next track, with a toast to say so.
+- **A settings menu on `s`** — video/download quality (`480p → 720p → 1080p →
+  Best`), save format (MP3 or MP4), smart loading, and the clipboard watcher,
+  persisted to `~/.config/ytmplayer/config`. The format is smart: SoundCloud and
+  Spotify are audio-only sources, so they always save MP3 whatever the default
+  says.
+- **A playlist view on `p`** — every entry titled, scrollable, click or `Enter`
+  to jump. `d` there downloads the whole playlist, with a live queued/%/saved
+  column per track; pressing `d` again cancels. The main view always shows what
+  plays next. Press `e` for **edit mode** and reorder the queue with `J`/`K` —
+  mpv follows every move.
+- **Titles resolve themselves.** Entries that arrive as URL slugs or numeric
+  IDs (SoundCloud sets, raw `.m3u` URLs) show a `⋯` and are re-titled in the
+  background from real metadata, a dozen per yt-dlp call.
+- **Smart loading.** A Spotify playlist starts playing after a single search —
+  the first track resolves alone while the rest match on YouTube in the
+  background and append as they land. Measured on a 13-track album: sound in
+  3s instead of 14s.
+- **Plays YouTube, SoundCloud and Spotify.** Tracks, playlists, albums, sets,
+  and SoundCloud radio (station and `/recommended` pages). Spotify can't be
+  streamed directly, so its tracks are matched to YouTube by name (that lookup
+  uses `curl`).
+- **Plays local files too** — a media file, a folder, or an `.m3u`/`.pls`
+  playlist. No yt-dlp involved, and nothing to download that isn't already
+  on disk.
+- **An always-on status bar.** The bottom row of every view — video mode
+  included — shows what the transfer machinery is doing: cache state, a
+  download's live percent and gauge, or a whole-playlist batch as
+  `⬇ QUEUE 7/62 · 42% ▰▰▰▱ <track>`, with the source and track count on the
+  right.
+- **It fits the terminal it's in.** Buttons render as `(key) icon Label` and
+  justify across the whole row; on a terminal too small for them, the scope
+  and the video switch off — properly disabled, not squeezed — and come back
+  when there's room.
+- **Playlists are navigable** with `n` / `b`, the position shown as `4/100`.
+- **Everything is clickable.** The UI is [Ratatui](https://ratatui.rs): every
+  `(key)` label is a button, the bar seeks, playlist rows jump, the full-height
+  **volume rail** on the right sets the level where you click it, and the wheel
+  scrolls lists — or turns the volume anywhere else.
 
-<img src="assets/screenshot-text.png" width="820" alt="The default text UI: title, progress bar, status line, controls and cache state">
+<img src="assets/screenshot-text.png" width="820" alt="The main view: NOW panel with progress bar, live spectrum analyzer with peak caps, volume rail and clickable keybar">
 
 ## Getting started
 
 Grab a package for your distribution from the
 [latest release](https://github.com/Osyna/YTM-Player/releases/latest). Each one pulls in
-**mpv** and **yt-dlp** for you, and suggests **ffmpeg** — optional, and only used to merge
-separate video and audio streams when downloading above MP3.
+**mpv** and **yt-dlp** for you, and suggests **ffmpeg** — optional, used to merge separate
+video and audio streams when downloading above MP3. **curl** (present on almost every system)
+is used only to read Spotify links.
 
 ```sh
 # Arch, Manjaro, EndeavourOS
@@ -92,7 +139,7 @@ sudo install -m755 ytmplayer-3.0.0-x86_64-linux/ytmplayer /usr/local/bin/
 
 `aarch64` builds of every format are attached too. Checksums in `SHA256SUMS`.
 
-Or build it — no C toolchain, no system libraries, four dependencies:
+Or build it — no C toolchain, no system libraries, five dependencies:
 
 ```sh
 git clone https://github.com/Osyna/YTM-Player
@@ -105,6 +152,7 @@ sudo install -m755 target/release/ytmplayer /usr/local/bin/
 
 ```sh
 ytmplayer https://www.youtube.com/watch?v=dQw4w9WgXcQ
+ytmplayer               # no argument: opens on a URL bar — paste, Enter, play
 ```
 
 Playlist URLs need quoting, or the shell will background the job on the `&`:
@@ -113,23 +161,51 @@ Playlist URLs need quoting, or the shell will background the job on the `&`:
 ytmplayer "https://www.youtube.com/watch?v=XnG3YWYMY-I&list=RDQMxUfpwjvstDY&start_radio=1"
 ```
 
+SoundCloud and Spotify links work the same way — a track, playlist, album, set,
+or SoundCloud radio — and so do local paths:
+
+```sh
+ytmplayer https://soundcloud.com/artist/track
+ytmplayer "https://soundcloud.com/stations/track/artist/track"   # SoundCloud radio
+ytmplayer "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+ytmplayer ~/Music          # a folder — or a file, or an .m3u/.pls list
+```
+
 | Key | Action |
 |---|---|
-| `p` | Play / pause |
+| `Space` | Play / pause |
 | `h` / `l` | Seek back / forward 5s |
 | `j` / `k` | Volume down / up |
 | `n` / `b` | Next / previous track (playlists) |
+| `o` | Add a link or path — plays right after the current track |
+| `p` | Queue view: scroll, jump to a track, download the whole list |
+| `e` | In the queue: edit mode — `J` / `K` move the selected track |
+| `s` | Settings: quality, save format, smart loading, clipboard watch |
 | `v` | Toggle ASCII video |
-| `d` | Download the current track (press again to cancel) |
-| `Tab` | Cycle quality: `MP3 → 480p → 720p → 1080p → Best` |
+| `c` | Cycle live scopes: spectrum analyzer, stereo waveform, VU meters |
+| `d` | Download the current track — or, in the queue view, everything (again cancels) |
 | `q` or `Ctrl+C` | Quit |
 
-Click the progress bar to seek to that point; click the status line to toggle
-play/pause.
+Every `(key)` label on screen is also a button — click it. The progress bar
+seeks, the volume rail on the right sets the level where you click, playlist
+rows jump, and the mouse wheel scrolls the playlist or turns the volume
+anywhere else.
 
-<img src="assets/screenshot-download.png" width="820" alt="A download in progress, showing a live percentage in the status line">
+<img src="assets/screenshot-queue.png" width="820" alt="The queue view: numbered tracks with the playing entry marked, and the edit/download controls below">
 
 ## How it works
+
+### Where the tracks come from
+
+YouTube and SoundCloud go straight to yt-dlp — a single track, a playlist, or a
+SoundCloud set, audio-only until `v` asks for a picture.
+
+Spotify is different: its streams are DRM'd, so a Spotify link is a *reference*,
+not a source. The player reads the public `open.spotify.com/embed` page — the
+JSON Spotify's own iframe player loads — for each track's name and artist, then
+plays the closest YouTube match: one search for a track, one per entry for a
+playlist or album. That embed fetch is the only thing that shells out to `curl`,
+so Spotify links need it on your PATH; nothing else does.
 
 ### Audio first, a picture only when asked
 
@@ -142,9 +218,24 @@ Press `v` and that URL is handed to the running mpv as an extra track. That is
 why the toggle is instant and playback doesn't so much as hiccup: no new
 process, no re-resolve, no seek back to where you were.
 
-It also means resolution is decoupled from playback. `Tab` up to 720p and the
-next `v` resolves and swaps the video track underneath you, while the same audio
-keeps playing.
+It also means resolution is decoupled from playback. Raise the quality in the
+`s` menu and the next `v` resolves and swaps the video track underneath you,
+while the same audio keeps playing.
+
+### Scopes
+
+`c` doesn't capture your speakers, open a loopback device, or spawn anything —
+the player installs a transparent tap in mpv's own audio filter chain. The
+audible path passes through untouched; a side branch measures full-band
+RMS/peak per channel plus sixteen octave-spaced band energies, and `ametadata`
+prints those numbers into FIFOs the player reads ~45 times a second
+(`src/viz.rs`). The scopes themselves are ordinary Rust widgets drawn into the
+same frame as the rest of the UI (`src/visualizer.rs`) — which is why they can
+sit in a pane between the progress bar and the keybar instead of owning the
+whole screen, and why switching them is instant. Adding one is a struct with a
+`render` method and one line in a registry.
+
+<img src="assets/screenshot-scope.png" width="820" alt="The stereo waveform scope: left channel above the axis in cyan, right below in magenta, drawn in braille">
 
 ### Downloads
 
@@ -185,7 +276,7 @@ is painting while it finishes.
 ### Changes from the Bash version
 
 - `jq`, `socat` and `bc` are gone
-- `v`, `d`, `Tab`, volume and mouse support
+- `v`, `d`, playlist and settings views, volume and full mouse support
 
 The full list is in [CHANGELOG.md](CHANGELOG.md).
 

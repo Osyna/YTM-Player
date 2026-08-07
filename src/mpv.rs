@@ -50,6 +50,8 @@ pub enum Media<'a> {
         file: &'a Path,
         ytdl_format: &'a str,
     },
+    /// Nothing yet: mpv idles until the user opens something from inside the UI.
+    Idle,
 }
 
 pub struct Mpv {
@@ -70,7 +72,10 @@ pub struct Mpv {
 impl Mpv {
     /// Spawn mpv headless (audio-only until a video track is explicitly selected),
     /// wire it to a fresh IPC socket, and block briefly until the socket is ready.
-    pub fn spawn(media: Media, socket_path: &Path) -> Result<Mpv, MpvError> {
+    ///
+    /// `idle` keeps mpv alive once the playlist runs dry - required while a background
+    /// resolver may still append entries, since mpv would otherwise exit in the gap.
+    pub fn spawn(media: Media, socket_path: &Path, idle: bool) -> Result<Mpv, MpvError> {
         let _ = std::fs::remove_file(socket_path);
 
         let mut cmd = Command::new("mpv");
@@ -112,6 +117,10 @@ impl Mpv {
                 cmd.arg(format!("--ytdl-format={ytdl_format}"))
                     .arg(format!("--playlist={}", file.display()));
             }
+            Media::Idle => {}
+        }
+        if idle {
+            cmd.arg("--idle=yes");
         }
 
         let mut child = cmd.spawn()?;
@@ -316,10 +325,110 @@ impl Mpv {
         self.run_command(json!(["playlist-prev", "force"]))
     }
 
+    /// Append `url` to the playlist; if nothing is playing (idle after running dry), start it.
+    pub fn playlist_append(&mut self, url: &str) -> Result<(), MpvError> {
+        self.run_command(json!(["loadfile", url, "append-play"]))
+    }
+
+    /// Move playlist entry `from` so it sits at index `to` (mpv semantics: the entry is
+    /// inserted *before* the entry currently at `to`).
+    pub fn playlist_move(&mut self, from: i64, to: i64) -> Result<(), MpvError> {
+        self.run_command(json!(["playlist-move", from, to]))
+    }
+
+    /// Force (or clear, with `None`) the displayed title. **Global**: it overrides
+    /// `media-title` for every entry until cleared, so anything that grows the playlist
+    /// beyond the one directly-loaded stream must clear it first.
+    pub fn set_forced_title(&mut self, title: Option<&str>) -> Result<(), MpvError> {
+        self.set_property("force-media-title", json!(title.unwrap_or("")))
+    }
+
+    /// Replace the whole playlist with `url` and start playing it.
+    pub fn load_url(&mut self, url: &str, title: Option<&str>) -> Result<(), MpvError> {
+        // The property (not a loadfile option) so it applies however the file loads.
+        self.set_forced_title(title)?;
+        self.run_command(json!(["loadfile", url, "replace"]))
+    }
+
+    /// Replace the whole playlist with the entries of a playlist file.
+    pub fn load_playlist_file(&mut self, file: &Path) -> Result<(), MpvError> {
+        self.set_forced_title(None)?;
+        self.run_command(json!(["loadlist", &file.display().to_string(), "replace"]))
+    }
+
+    /// Point yt-dlp resolution (mpv's `ytdl_hook`) at a format for entries mpv resolves
+    /// itself. Direct URLs ignore it.
+    pub fn set_ytdl_format(&mut self, format: &str) -> Result<(), MpvError> {
+        self.set_property("ytdl-format", json!(format))
+    }
+
+    /// Enable or disable mpv's own yt-dlp hook for *future* loads. Direct CDN URLs we
+    /// resolved ourselves must not be re-extracted; page URLs appended at runtime must be.
+    pub fn set_ytdl_enabled(&mut self, enabled: bool) -> Result<(), MpvError> {
+        self.set_property("ytdl", json!(enabled))
+    }
+
+    /// Absolute volume, 0..=150 (see `--volume-max` in [`Mpv::spawn`]).
+    pub fn set_volume(&mut self, volume: f64) -> Result<(), MpvError> {
+        self.set_property("volume", json!(volume.clamp(0.0, 150.0).round()))
+    }
+
+    /// How many entries mpv's playlist holds right now.
+    pub fn playlist_count(&mut self) -> i64 {
+        self.get_property("playlist-count")
+            .as_ref()
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    }
+
+    /// Jump straight to playlist entry `index` and play it.
+    pub fn playlist_play_index(&mut self, index: i64) -> Result<(), MpvError> {
+        self.run_command(json!(["playlist-play-index", index]))
+    }
+
+    /// True when an `--idle=yes` mpv has nothing loaded - i.e. the playlist truly ran out.
+    pub fn idle_active(&mut self) -> bool {
+        self.get_property("idle-active")
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Whether the current file brought a real video stream along (embedded, not added).
+    /// Local audio files have none, and enabling `vid` on them would just blank the screen.
+    pub fn has_video_track(&mut self) -> bool {
+        self.get_property("track-list")
+            .as_ref()
+            .and_then(Value::as_array)
+            .is_some_and(|tracks| {
+                tracks
+                    .iter()
+                    .any(|t| t.get("type").and_then(Value::as_str) == Some("video"))
+            })
+    }
+
     /// Toggle the mpv-native ASCII/true-color terminal video renderer (`--vo=tct`) on or off
     /// without reloading the stream.
     pub fn set_video_enabled(&mut self, enabled: bool) -> Result<(), MpvError> {
         self.set_property("vid", if enabled { json!("auto") } else { json!("no") })
+    }
+
+    /// Install (or clear, with `None`) the audio filter chain. The visualizer tap rides
+    /// here: a transparent graph that measures the playing audio and prints levels into
+    /// FIFOs (see `crate::viz::Tap`) while the audible path passes through untouched.
+    /// Set through IPC rather than the command line so none of the graph's separators
+    /// ever meet a shell or mpv's option parser.
+    pub fn set_af(&mut self, af: Option<&str>) -> Result<(), MpvError> {
+        self.set_property("af", json!(af.unwrap_or("")))
+    }
+
+    /// Gapless decode plus opening the next playlist entry before the current one ends.
+    /// Together they remove the silent seam at an advance - the gap a crossfade would
+    /// otherwise fade into. Follows the crossfade setting.
+    pub fn set_seamless(&mut self, on: bool) -> Result<(), MpvError> {
+        let flag = if on { json!("yes") } else { json!("no") };
+        self.set_property("gapless-audio", flag.clone())?;
+        self.set_property("prefetch-playlist", flag)
     }
 
     /// Hand mpv a video stream to play alongside the audio it is already playing, and select it.

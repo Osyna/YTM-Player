@@ -4,6 +4,117 @@ All notable changes to YTM-Player. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **An always-on status bar** across the bottom of every view, video mode
+  included: transfer state on the left (cache state, a single download's
+  percent and gauge, or a whole-playlist batch as `⬇ QUEUE 7/62 · 42% ▰▰▰▱ …`
+  with the track it is pulling), the source and track count on the right, a
+  rule between so the row reaches both edges.
+- **Buttons are `(key) icon Label` and justify across the whole row** - the
+  gaps stretch so the first control starts on the left edge and the last ends
+  on the right, in every view. Geometry is measured in display cells, not
+  chars, so double-width glyphs can't shift a row anymore.
+- **Queue edit mode got its own control bar** - `(K) ▲ Up`, `(J) ▼ Down`,
+  `(e) ✓ Done` - plus the panel tag shows where the grabbed row sits
+  (`EDIT ▸ 2/62`) and the row wears a `↕` while it moves.
+
+- **Live scopes with `c`, drawn natively in the TUI.** A 16-band spectrum
+  analyzer with falling peak caps, a stereo braille waveform, and VU meters
+  with peak-hold needles and a dB scale. The data comes from a transparent tap
+  in mpv's own audio filter chain: `astats` and sixteen octave-spaced bandpass
+  branches print levels through `ametadata` into FIFOs the player reads ~45
+  times a second (`src/viz.rs`). No capture device, no loopback, no PCM
+  copying, no new dependency — and the scopes render as ordinary widgets in a
+  pane of the main view, composed with the volume rail, queue and keybar
+  instead of owning the whole screen. Adding one is a struct with a `render`
+  method plus one registry line in `src/visualizer.rs`.
+- **A URL bar when launched bare.** `ytmplayer` with no argument opens on an
+  input instead of usage text: paste a link or a local path, Enter, play.
+  Bracketed paste is wired up, `~` expands.
+- **`o` queues a link while playing.** An inline "ADD NEXT" prompt resolves in
+  the background and inserts right after the current track — a single video, a
+  whole playlist, a Spotify album (matched on YouTube), or a local path. The
+  queue view and mpv stay in step; a toast confirms.
+- **Clipboard watch, off by default.** Enabled in settings, any YouTube /
+  SoundCloud / Spotify link copied anywhere on the system queues itself as the
+  next track (wl-paste, xclip or xsel — whichever the system has). Whatever was
+  already in the clipboard at startup is deliberately ignored.
+- **Queue edit mode.** `e` in the playlist view, then `J`/`K` (or the buttons)
+  move the selected track; mpv's playlist mirrors every move, including the
+  currently playing entry.
+- **Background title resolution.** Entries whose only name is a URL slug or a
+  numeric SoundCloud id render dim with a `⋯` and are re-titled from real
+  metadata as batched yt-dlp lookups land - no more `1382326714` rows.
+- **A full-height volume rail** on the main view's right edge: click to set,
+  wheel to nudge, 100% line marked, overdrive above 100% shown in red.
+- **SoundCloud and Spotify links.** yt-dlp already plays SoundCloud (tracks and
+  sets); Spotify links, which can't be streamed, are matched to YouTube by
+  reading the public `open.spotify.com/embed` metadata — a track becomes one
+  YouTube search, a playlist or album one per entry. Spotify links need `curl`.
+- **Ratatui UI, fully mouse-interactive, redesigned.** Text mode is four views
+  on [Ratatui](https://ratatui.rs): main (with the scope pane), queue, settings
+  and the URL bar, all sharing one dark hacker-terminal look - `▛▞ YTM://PLAYER`
+  brand line, `╸TAG╺` panels, electric-cyan/magenta accents. Every `(key)`
+  label is a clickable button, the progress bar seeks, playlist rows jump on
+  click, and the wheel scrolls lists or turns the volume. Each frame still
+  reaches the terminal as one atomic write, so mpv's `tct` frames and the UI
+  can't interleave.
+- **Playlist view on `p`.** Every entry titled and scrollable; click or `Enter`
+  jumps. `d` inside the view downloads the whole playlist with a live
+  queued/percent/saved/failed column per track, and `d` again cancels. The main
+  view shows the upcoming track.
+- **Settings menu on `s`**, persisted to `~/.config/ytmplayer/config`: video and
+  download quality (`480p/720p/1080p/Best`), save format (MP3/MP4), smart
+  loading, and clipboard watch. Audio-only sources (SoundCloud, Spotify) ignore
+  MP4 and always save MP3; local files download nothing.
+- **Smart loading.** A Spotify playlist plays after a single search: the first
+  track resolves alone, the rest match on YouTube in the background and append
+  to the live playlist as they land (mpv runs `--idle=yes` so a slow match can
+  never end the session early). Measured on a 13-track album: sound in 3s
+  instead of 14s.
+- **SoundCloud radio.** Station pages and a track's `/recommended` page play as
+  playlists.
+- **Local playback.** A media file, a folder of media files, or an
+  `.m3u`/`.m3u8`/`.pls` playlist - decoded by mpv directly, no yt-dlp involved.
+
+### Fixed
+
+- **Playlist titles resolving in blocks of 12 or not at all.** `yt-dlp` exits 1
+  when *any* URL in a batch is dead (private, deleted, geo-blocked), even under
+  `--ignore-errors`, while still printing every title it did resolve. The
+  resolver treated the whole chunk as failed and threw away the other eleven
+  titles. It now keeps whatever came back; a dead entry costs itself, nothing
+  else.
+
+### Changed
+
+- Play/pause moved from `p` to `Space` (a click on the status line still works);
+  `p` now opens the playlist view.
+- `Tab` quality cycling is gone; quality and save format live in the settings
+  menu. SoundCloud and Spotify downloads are always MP3.
+- `j`/`k` volume now follows vim: `j` down, `k` up.
+- **Video mode wears the whole player UI, not a stripped bar.** The bottom rows
+  are the same widgets text mode draws - title and transport chip, clickable
+  progress row, two justified button rows, the status bar - rendered off-screen
+  and serialized to ANSI over exactly those rows, sharing one click map with
+  text mode. The hand-rolled video bar and its separate hit-test are gone.
+- **A too-small terminal disables the scope and the video** rather than
+  squeezing them: below the thresholds the pane's rows go to NOW, `(c)`/`(v)`
+  render dim, the keys answer with a toast, the audio tap isn't even sampled -
+  and shrinking a live video mode drops it back to text automatically instead
+  of letting mpv stream a picture with nowhere to land.
+- Visualizers no longer render through mpv's `tct` video path at all - `c` is
+  pure UI state now, so cycling scopes is instant, works while a video is
+  loading, never tears the terminal down, and resize just works. `v` (real
+  ASCII video) keeps the `tct` path.
+- mpv always runs `--idle=yes`: the session's end is the player's decision.
+  URL-launched sessions still exit when the queue runs out; anything opened
+  interactively (URL bar, `o`, clipboard) keeps the player up for the next
+  link.
+
 ## [3.0.0] - 2026-08-05
 
 The Bash script is gone. YTM-Player is now a single Rust binary that talks to
@@ -116,5 +227,6 @@ next/previous.
   ([#1](https://github.com/Osyna/YTM-Player/pull/1), thanks
   [@ConttiDev](https://github.com/ConttiDev)).
 
+[Unreleased]: https://github.com/Osyna/YTM-Player/compare/v3.0.0...HEAD
 [3.0.0]: https://github.com/Osyna/YTM-Player/releases/tag/v3.0.0
 [2.0]: https://github.com/Osyna/YTM-Player/commits/main
