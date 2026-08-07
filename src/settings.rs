@@ -137,12 +137,20 @@ impl Settings {
     }
 
     /// Best-effort: a settings menu that can't write its config still works for the session.
+    ///
+    /// Written to a sibling temp file and renamed over the config. A plain write
+    /// truncates first, so a crash or a full disk mid-write would leave an empty file and
+    /// lose every setting; `rename(2)` within the same directory is atomic, so the config
+    /// is either the old one or the new one.
     pub fn save(&self) {
         let Some(path) = config_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, self.to_kv());
+        let temp = path.with_extension(format!("tmp{}", std::process::id()));
+        if std::fs::write(&temp, self.to_kv()).is_ok() && std::fs::rename(&temp, &path).is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
     }
 
     fn from_kv(text: &str) -> Settings {

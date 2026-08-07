@@ -9,10 +9,35 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
+
+/// How long a finished-looking yt-dlp gets to actually exit before it is killed.
+/// Its stdout has already closed by then, so anything still running is wedged - a stuck
+/// ffmpeg merge, a hung connection teardown - and would otherwise hold the download slot
+/// forever with the row frozen mid-percentage.
+const EXIT_GRACE: Duration = Duration::from_secs(20);
+
+/// `child.wait()` with a deadline: kill it once `limit` has passed and say so.
+fn wait_with_deadline(child: &mut Child, limit: Duration) -> Result<ExitStatus, String> {
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("yt-dlp stopped responding and was terminated".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 
 /// Where a URL's audio actually comes from. Decides which programs are required, whether
 /// downloads may carry video, and how the playlist resolves.
@@ -1159,7 +1184,7 @@ impl DownloadControl {
                 }
             }
 
-            let status = child.wait();
+            let status = wait_with_deadline(&mut child, EXIT_GRACE);
             *pid_slot.lock() = None;
             *state.lock() = if cancelled.load(Ordering::SeqCst) {
                 DownloadState::Cancelled
@@ -1171,12 +1196,50 @@ impl DownloadControl {
                     Ok(s) => DownloadState::Failed {
                         message: format!("yt-dlp exited with {s}"),
                     },
-                    Err(e) => DownloadState::Failed {
-                        message: e.to_string(),
-                    },
+                    Err(message) => DownloadState::Failed { message },
                 }
             };
         });
+    }
+}
+
+/// Age at which an abandoned `.part` is considered dead rather than in flight.
+/// Comfortably longer than any real download, so a running one is never touched.
+const PART_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Delete `downloads/*.part` / `*.ytdl` left by killed or crashed downloads.
+///
+/// yt-dlp resumes its own partial file when the same download is started again, but a
+/// download that is never retried leaves the bytes on disk forever - gigabytes of them,
+/// invisibly. Only files older than [`PART_MAX_AGE`] go, so an in-flight download (and a
+/// resumable one from earlier today) survives.
+pub fn sweep_stale_parts() {
+    sweep_parts_in(Path::new("downloads"), PART_MAX_AGE);
+}
+
+/// [`sweep_stale_parts`] against an explicit directory and age, so it is testable.
+fn sweep_parts_in(dir: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return; // no downloads yet: nothing to sweep
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_partial = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e == "part" || e == "ytdl");
+        if !is_partial {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -1216,6 +1279,35 @@ mod tests {
             waiting.entry(url).or_default().push_back(i);
         }
         waiting
+    }
+
+    #[test]
+    fn sweep_takes_abandoned_parts_and_leaves_finished_files() {
+        let dir = std::env::temp_dir().join(format!("ytmsweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["dead.mp4.part", "dead.ytdl", "keeper.mp3", "cover.jpg"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        // Zero max age: everything written above already counts as abandoned.
+        sweep_parts_in(&dir, Duration::ZERO);
+        assert!(!dir.join("dead.mp4.part").exists());
+        assert!(!dir.join("dead.ytdl").exists());
+        assert!(
+            dir.join("keeper.mp3").exists(),
+            "deleted a finished download"
+        );
+        assert!(dir.join("cover.jpg").exists());
+
+        // A part younger than the cutoff is a download in flight - never touched.
+        std::fs::write(dir.join("live.mp4.part"), b"x").unwrap();
+        sweep_parts_in(&dir, PART_MAX_AGE);
+        assert!(dir.join("live.mp4.part").exists(), "killed a live download");
+
+        // A missing downloads/ is not an error.
+        std::fs::remove_dir_all(&dir).unwrap();
+        sweep_parts_in(&dir, Duration::ZERO);
     }
 
     #[test]

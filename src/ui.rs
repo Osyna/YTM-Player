@@ -13,12 +13,12 @@
 //!
 //! Both paths dispatch the same [`Action`] vocabulary, so a key and a click can't drift.
 
+use crate::audio_tap::VizSnapshot;
 use crate::effects;
 use crate::recorder::CacheState;
 use crate::settings::Settings;
 use crate::tty;
 use crate::visualizer::Visualizer;
-use crate::viz::VizSnapshot;
 use crate::youtube::DownloadState;
 use crossterm::Command as CtCommand;
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -563,6 +563,34 @@ impl Btn {
     }
 }
 
+/// The transport row: pause, seek, volume, and track skip on a playlist.
+///
+/// Shared by both rendering paths - text mode's first keybar row and the block
+/// [`video_bottom`] pins under the picture - so the two can't drift apart in which
+/// controls they offer or what they're labelled.
+fn transport_buttons(state: &UiState) -> Vec<Btn> {
+    let pause_label = if state.paused { "Play" } else { "Pause" };
+    let pause_icon = if state.paused { "▶" } else { "⏸" };
+    let mut transport = vec![
+        Btn::new("Space", pause_label, Action::TogglePause)
+            .icon(pause_icon)
+            .enabled(!state.idle),
+        Btn::new("h", "-5s", Action::SeekBack)
+            .icon("«")
+            .enabled(!state.idle),
+        Btn::new("l", "+5s", Action::SeekForward)
+            .icon("»")
+            .enabled(!state.idle),
+        Btn::new("j", "Vol-", Action::VolumeDown).icon("▾"),
+        Btn::new("k", "Vol+", Action::VolumeUp).icon("▴"),
+    ];
+    if state.is_playlist {
+        transport.push(Btn::new("b", "Prev", Action::Prev).icon("⇤"));
+        transport.push(Btn::new("n", "Next", Action::Next).icon("⇥"));
+    }
+    transport
+}
+
 /// Render a row of `(key) icon Label` buttons justified across the whole of `area` -
 /// the gaps stretch so the first button starts on the left edge and the last ends on
 /// the right - registering a click zone per enabled button.
@@ -815,6 +843,22 @@ fn download_button(state: &UiState) -> Btn {
 // ---------------------------------------------------------------------------
 
 /// The transport state chip: `▶ PLAYING` / `⏸ PAUSED` / `◌ IDLE`.
+/// Text for the "now playing" row.
+///
+/// mpv publishes no `media-title` until it has actually opened the stream, so a track
+/// that is still being cached would otherwise render as a lone `▸` - and in video mode,
+/// with no picture above it yet, that leaves a blank pane between the border and the
+/// status bar. Fall back to the state we do know.
+fn now_playing_text(state: &UiState) -> String {
+    if !state.title.trim().is_empty() {
+        return state.title.to_string();
+    }
+    match state.cache {
+        CacheState::Buffering => "caching…".to_string(),
+        _ => "loading…".to_string(),
+    }
+}
+
 fn state_chip(state: &UiState) -> Span<'static> {
     if state.idle {
         Span::styled("◌ IDLE", faint().add_modifier(Modifier::BOLD))
@@ -984,7 +1028,7 @@ fn draw_main(
             let mut spans = vec![
                 Span::styled("▸ ", Style::new().fg(ACCENT2)),
                 Span::styled(
-                    state.title.to_string(),
+                    now_playing_text(state),
                     Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -1051,27 +1095,8 @@ fn draw_main(
     // -- keybar ---------------------------------------------------------------------------
     let [keys1_a, keys2_a] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(keys_a);
-    let pause_label = if state.paused { "Play" } else { "Pause" };
-    let pause_icon = if state.paused { "▶" } else { "⏸" };
-    let mut transport = vec![
-        Btn::new("Space", pause_label, Action::TogglePause)
-            .icon(pause_icon)
-            .enabled(!state.idle),
-        Btn::new("h", "-5s", Action::SeekBack)
-            .icon("«")
-            .enabled(!state.idle),
-        Btn::new("l", "+5s", Action::SeekForward)
-            .icon("»")
-            .enabled(!state.idle),
-        Btn::new("j", "Vol-", Action::VolumeDown).icon("▾"),
-        Btn::new("k", "Vol+", Action::VolumeUp).icon("▴"),
-    ];
-    if state.is_playlist {
-        transport.push(Btn::new("b", "Prev", Action::Prev).icon("⇤"));
-        transport.push(Btn::new("n", "Next", Action::Next).icon("⇥"));
-    }
     frame.render_widget(
-        Paragraph::new(button_row(map, keys1_a, &transport)),
+        Paragraph::new(button_row(map, keys1_a, &transport_buttons(state))),
         keys1_a,
     );
 
@@ -1657,7 +1682,7 @@ pub fn video_bottom(state: &UiState) -> (String, ClickMap) {
     let mut left = vec![
         Span::styled("▸ ", Style::new().fg(ACCENT2)),
         Span::styled(
-            state.title.to_string(),
+            now_playing_text(state),
             Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1672,20 +1697,8 @@ pub fn video_bottom(state: &UiState) -> (String, ClickMap) {
 
     Paragraph::new(progress_row(&mut map, row(1), state)).render(row(1), &mut buf);
 
-    let pause_label = if state.paused { "Play" } else { "Pause" };
-    let pause_icon = if state.paused { "▶" } else { "⏸" };
-    let mut transport = vec![
-        Btn::new("Space", pause_label, Action::TogglePause).icon(pause_icon),
-        Btn::new("h", "-5s", Action::SeekBack).icon("«"),
-        Btn::new("l", "+5s", Action::SeekForward).icon("»"),
-        Btn::new("j", "Vol-", Action::VolumeDown).icon("▾"),
-        Btn::new("k", "Vol+", Action::VolumeUp).icon("▴"),
-    ];
-    if state.is_playlist {
-        transport.push(Btn::new("b", "Prev", Action::Prev).icon("⇤"));
-        transport.push(Btn::new("n", "Next", Action::Next).icon("⇥"));
-    }
-    Paragraph::new(button_row(&mut map, row(2), &transport)).render(row(2), &mut buf);
+    Paragraph::new(button_row(&mut map, row(2), &transport_buttons(state)))
+        .render(row(2), &mut buf);
 
     let mut features = vec![
         Btn::new("v", "Text", Action::ToggleVideo).icon("▤"),
@@ -1865,6 +1878,28 @@ mod tests {
             text.push('\n');
         }
         (text, map)
+    }
+
+    #[test]
+    fn a_caching_track_with_no_title_yet_still_names_its_state() {
+        // mpv has no media-title until the stream opens; in video mode the picture is
+        // blank too, so an empty title row leaves a pane with nothing in it at all.
+        let s = Settings::default();
+        let dl = DownloadState::Idle;
+        let rows = entries();
+        let mut ui = state(&rows, &s, &dl);
+        ui.title = "";
+        ui.cache = CacheState::Buffering;
+
+        let (text, _) = render_to_text(&ui);
+        assert!(text.contains("caching…"), "text mode title row is blank");
+
+        let (video, _) = video_bottom(&ui);
+        assert!(video.contains("caching…"), "video mode title row is blank");
+
+        ui.cache = CacheState::Off;
+        let (text, _) = render_to_text(&ui);
+        assert!(text.contains("loading…"));
     }
 
     #[test]

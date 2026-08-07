@@ -12,7 +12,8 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/Osyna/YTM-Player"
 license=('PolyForm-Noncommercial-1.0.0')
 depends=('mpv' 'yt-dlp')
-optdepends=('ffmpeg: merge separate video and audio streams when downloading above MP3')
+optdepends=('ffmpeg: merge separate video and audio streams when downloading above MP3'
+            'curl: read Spotify links (track and playlist names come from the public embed page)')
 provides=("$_pkgname=$pkgver")
 conflicts=("$_pkgname")
 # The binary is statically linked against musl and already stripped.

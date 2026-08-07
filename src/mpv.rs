@@ -12,6 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const STDERR_TAIL_LINES: usize = 20;
+/// How long to wait for a reply on the IPC socket.
+///
+/// This is read from the render thread, so it is a UI stall budget, not a network
+/// timeout: mpv is a local process on a Unix socket and answers in well under a
+/// millisecond. A wedged mpv is the only thing that ever hits this, and when it does the
+/// UI should notice within a frame or two rather than freezing for over a second.
+const REPLY_TIMEOUT: Duration = Duration::from_millis(150);
 /// How many unsolicited events to skip while waiting for replies before giving up.
 const MAX_INTERLEAVED_EVENTS: usize = 64;
 
@@ -161,9 +168,7 @@ impl Mpv {
         };
 
         let reader_sock = writer.try_clone()?;
-        reader_sock
-            .set_read_timeout(Some(Duration::from_millis(1500)))
-            .ok();
+        reader_sock.set_read_timeout(Some(REPLY_TIMEOUT)).ok();
 
         Ok(Mpv {
             child,
@@ -415,7 +420,7 @@ impl Mpv {
 
     /// Install (or clear, with `None`) the audio filter chain. The visualizer tap rides
     /// here: a transparent graph that measures the playing audio and prints levels into
-    /// FIFOs (see `crate::viz::Tap`) while the audible path passes through untouched.
+    /// FIFOs (see `crate::audio_tap::Tap`) while the audible path passes through untouched.
     /// Set through IPC rather than the command line so none of the graph's separators
     /// ever meet a shell or mpv's option parser.
     pub fn set_af(&mut self, af: Option<&str>) -> Result<(), MpvError> {

@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +95,7 @@ impl Tap {
     /// Create the FIFOs and start the reader. The returned tap is inert until
     /// [`Tap::graph`] is installed as mpv's `af`.
     pub fn start() -> std::io::Result<Tap> {
+        sweep_stale_taps();
         let dir = std::env::temp_dir().join(format!("ytmviz_{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
 
@@ -204,6 +205,30 @@ impl Drop for Tap {
     }
 }
 
+/// Delete `ytmviz_<pid>` directories left by players that are gone.
+///
+/// [`Tap`]'s `Drop` cleans up a normal exit, but SIGKILL, a power cut or an OOM kill
+/// leave the directory and its 17 FIFOs behind forever. `/proc/<pid>` is the liveness
+/// test - this player is Linux-only anyway, and it keeps libc out of the tree.
+fn sweep_stale_taps() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("ytmviz_")) else {
+            continue;
+        };
+        // Anything not a plain pid is not ours to delete.
+        if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if !Path::new("/proc").join(pid).exists() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Normalise a dB text value against a floor: `-floor` dB -> 0.0, 0 dB -> 1.0.
 fn norm_db(text: &str, floor: f32) -> f32 {
     let db: f32 = text.trim().parse().unwrap_or(f32::NEG_INFINITY);
@@ -305,6 +330,26 @@ fn commit_full(pending: &mut [Option<f32>; 4], data: &Mutex<VizData>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_removes_dead_taps_and_keeps_live_ones() {
+        let tmp = std::env::temp_dir();
+        // A pid above the kernel's maximum can never be running.
+        let dead = tmp.join("ytmviz_4194305");
+        let live = tmp.join(format!("ytmviz_{}", std::process::id()));
+        let foreign = tmp.join("ytmviz_notapid");
+        for d in [&dead, &live, &foreign] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+
+        sweep_stale_taps();
+
+        assert!(!dead.exists(), "a dead player's FIFOs were left behind");
+        assert!(live.exists(), "swept a running player's own directory");
+        assert!(foreign.exists(), "deleted something that is not ours");
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(&foreign);
+    }
 
     #[test]
     fn graph_is_one_chain_with_all_fifos() {

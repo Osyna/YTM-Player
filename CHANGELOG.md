@@ -8,6 +8,23 @@ All notable changes to YTM-Player. Format based on
 
 ### Added
 
+- **An effects rack on `e`.** Echo, small-room reverb, a +8 dB bass shelf,
+  nightcore, centre-cancel karaoke and a slow 8D orbit, freely combinable. Each
+  is one libavfilter chain; everything enabled joins into a single `af` node
+  placed *before* the visualizer tap, so the scopes measure what the ears get.
+  Downloads and the stream recorder read the demuxer, upstream of every filter,
+  so a saved file is never coloured by an effect. Adding one is a line in
+  `src/effects.rs`.
+- **Crossfade, off by default, 3-15 s (5 default).** On playlist auto-advance
+  the outgoing track fades down and the incoming one fades up, half the
+  configured time each side. mpv gets `gapless-audio` + `prefetch-playlist`
+  while it's on, so the seam under the fade carries no silence. mpv decodes one
+  track at a time, so this is a volume envelope across an instant switch, not a
+  two-stream overlap: what it buys is a seamless transition, not a DJ mix.
+  Manual skips still cut instantly, the queue's last track plays out clean, and
+  anything shorter than twice the transition never fades. `j`/`k` during a fade
+  move your level, not the envelope's.
+
 - **An always-on status bar** across the bottom of every view, video mode
   included: transfer state on the left (cache state, a single download's
   percent and gauge, or a whole-playlist batch as `⬇ QUEUE 7/62 · 42% ▰▰▰▱ …`

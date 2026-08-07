@@ -33,7 +33,9 @@ license-file = "LICENSE"
 section = "sound"
 priority = "optional"
 depends = "mpv, yt-dlp"
-recommends = "ffmpeg"
+# ffmpeg merges separate video/audio streams; curl reads Spotify's public embed page.
+# Both are optional: without them those two features report why, and nothing else changes.
+recommends = "ffmpeg, curl"
 extended-description = """\
 Plays YouTube audio in a small text UI with a live progress bar, and renders the video as \
 true-colour ASCII in the same terminal on a keypress, without interrupting playback. Tracks \
@@ -50,6 +52,7 @@ summary = "Terminal YouTube player with true-colour ASCII video"
 # invents a glibc dynamic-loader requirement the package does not have.
 auto-req = "no"
 requires = { mpv = "*", yt-dlp = "*" }
+recommends = { ffmpeg = "*", curl = "*" }
 assets = [
     { source = "target/release/ytmplayer", dest = "/usr/bin/ytmplayer", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/ytmplayer/README.md", mode = "644", doc = true },

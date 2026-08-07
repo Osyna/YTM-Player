@@ -1,6 +1,6 @@
 //! Native terminal visualizers, drawn by us from live tap data.
 //!
-//! Nothing here touches mpv: [`crate::viz::Tap`] measures the playing audio inside
+//! Nothing here touches mpv: [`crate::audio_tap::Tap`] measures the playing audio inside
 //! mpv's own filter chain and hands renderers a [`VizSnapshot`] ~45 times a second.
 //! Each visualizer is an ordinary widget painting into the ratatui buffer, so it
 //! composes with the rest of the UI - panes, borders, clicks - instead of owning the
@@ -9,7 +9,7 @@
 //! Adding one is a struct with a [`Visualizer`] impl plus one line in [`all`]. State
 //! (peak caps, smoothing) lives in the struct; the snapshot is pure data.
 
-use crate::viz::{BAND_COUNT, BAND_FLOOR, VizSnapshot};
+use crate::audio_tap::{BAND_COUNT, BAND_FLOOR, VizSnapshot};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -75,7 +75,7 @@ const AGC_DECAY_DB: f32 = 0.09;
 /// stay near the baseline instead of being amplified into a full-height wall.
 const AGC_REF_MIN_DB: f32 = -20.0;
 
-/// Undo [`crate::viz::BAND_FLOOR`]'s fixed normalisation back into dB.
+/// Undo [`crate::audio_tap::BAND_FLOOR`]'s fixed normalisation back into dB.
 fn band_db(level: f32) -> f32 {
     level.clamp(0.0, 1.0).mul_add(BAND_FLOOR, -BAND_FLOOR)
 }

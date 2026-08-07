@@ -1,3 +1,4 @@
+mod audio_tap;
 mod effects;
 mod mpv;
 mod recorder;
@@ -6,7 +7,6 @@ mod spotify;
 mod tty;
 mod ui;
 mod visualizer;
-mod viz;
 mod youtube;
 
 use crossterm::event::{
@@ -108,9 +108,12 @@ fn run() -> AppResult<()> {
     // empty playlist. Session end is decided by the player, not by mpv exiting.
     let mut mpv = Mpv::spawn(media, &socket_path, true)?;
 
+    // Yesterday's abandoned downloads are gigabytes nobody will ever resume.
+    youtube::sweep_stale_parts();
+
     // The visualizer tap rides mpv's own audio chain; a failed tap costs nothing but the
     // scopes. Installed before anything plays so the very first track is measured.
-    let tap = viz::Tap::start().ok();
+    let tap = audio_tap::Tap::start().ok();
     if let Some(tap) = &tap {
         let _ = mpv.set_af(Some(&tap.graph()));
     }
@@ -146,6 +149,47 @@ fn run() -> AppResult<()> {
         println!("{}", player.mpv.exit_report());
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Playlist index arithmetic
+//
+// mpv's playlist and ours are not always the same list: a Spotify track with no
+// YouTube match never reaches mpv, so positions drift apart and `playlist_map` maps
+// mpv's index onto ours (`None` when the two are identical). These are pure lookups,
+// split out from `Player` so the arithmetic is testable without mpv or a terminal.
+// ---------------------------------------------------------------------------
+
+/// Our entry index for mpv playlist position `pos`.
+fn entry_at(map: Option<&[usize]>, pos: usize, len: usize) -> usize {
+    match map {
+        Some(map) => map.get(pos).copied().unwrap_or(0),
+        None => pos.min(len.saturating_sub(1)),
+    }
+}
+
+/// mpv's playlist index for our entry `entry`, or `None` when mpv never got it.
+fn mpv_index(map: Option<&[usize]>, entry: usize, len: usize) -> Option<i64> {
+    match map {
+        Some(map) => map.iter().position(|&e| e == entry).map(|i| i as i64),
+        None => (entry < len).then_some(entry as i64),
+    }
+}
+
+/// The entry that plays after mpv position `pos`.
+///
+/// Normally the next thing in mpv's own playlist, which skips the entries that never
+/// resolved. Past the end of the map we fall back to the next entry in *our* list: the
+/// resolver may still be appending, and naming the track the user can see beats naming
+/// nothing.
+fn next_entry(map: Option<&[usize]>, pos: usize, len: usize) -> Option<usize> {
+    match map {
+        Some(map) => map.get(pos + 1).copied().or_else(|| {
+            let current = entry_at(Some(map), pos, len);
+            (current + 1 < len).then_some(current + 1)
+        }),
+        None => (pos + 1 < len).then_some(pos + 1),
+    }
 }
 
 fn display_usage(program: &str) {
@@ -301,7 +345,7 @@ struct Player {
     msg_deadline: Option<Instant>,
     video_mode: bool,
     /// Live audio measurements for the scopes; `None` when the tap failed to start.
-    tap: Option<viz::Tap>,
+    tap: Option<audio_tap::Tap>,
     /// The visualizer registry; `visualizer` indexes into it.
     vizzers: Vec<Box<dyn Visualizer>>,
     visualizer: Option<usize>,
@@ -336,7 +380,7 @@ impl Player {
         mut mpv: Mpv,
         resolution: Option<youtube::Resolution>,
         video_url: Option<String>,
-        tap: Option<viz::Tap>,
+        tap: Option<audio_tap::Tap>,
         term: tty::Terminal,
         settings: Settings,
     ) -> io::Result<Player> {
@@ -966,31 +1010,29 @@ impl Player {
 
     /// Current track as an index into `source.entries`.
     fn entry_index(&self) -> usize {
-        let pos = self.snap.playlist_pos.max(0) as usize;
-        match &self.playlist_map {
-            Some(map) => map.get(pos).copied().unwrap_or(0),
-            None => pos.min(self.source.entries.len().saturating_sub(1)),
-        }
+        entry_at(
+            self.playlist_map.as_deref(),
+            self.snap.playlist_pos.max(0) as usize,
+            self.source.entries.len(),
+        )
     }
 
     /// mpv playlist index for an entry, when the entry is actually in mpv's playlist.
     fn mpv_index_of(&self, entry: usize) -> Option<i64> {
-        match &self.playlist_map {
-            Some(map) => map.iter().position(|&e| e == entry).map(|i| i as i64),
-            None => (entry < self.source.entries.len()).then_some(entry as i64),
-        }
+        mpv_index(
+            self.playlist_map.as_deref(),
+            entry,
+            self.source.entries.len(),
+        )
     }
 
     /// Title of whatever plays after the current track, if anything is known to.
     fn next_entry_title(&self) -> Option<&str> {
-        let pos = self.snap.playlist_pos.max(0) as usize;
-        let next = match &self.playlist_map {
-            Some(map) => map.get(pos + 1).copied().or_else(|| {
-                let current = self.entry_index();
-                (current + 1 < self.source.entries.len()).then_some(current + 1)
-            }),
-            None => Some(pos + 1),
-        }?;
+        let next = next_entry(
+            self.playlist_map.as_deref(),
+            self.snap.playlist_pos.max(0) as usize,
+            self.source.entries.len(),
+        )?;
         self.source.entries.get(next).map(|e| e.title.as_str())
     }
 
@@ -1105,7 +1147,7 @@ impl Player {
         // Below the scope threshold the tap isn't even sampled - no cost, pane off.
         let vsnap = match (&self.tap, self.visualizer) {
             (Some(tap), Some(_)) if scope_ok => tap.snapshot(wave_len),
-            _ => viz::VizSnapshot::default(),
+            _ => audio_tap::VizSnapshot::default(),
         };
         let viz_pair = self
             .visualizer
@@ -1937,4 +1979,63 @@ fn read_clipboard(args: &[&str]) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A Spotify playlist of five tracks where entries 1 and 3 never matched: mpv only
+    // ever saw 0, 2 and 4, so mpv position 1 is our entry 2.
+    const SPARSE: &[usize] = &[0, 2, 4];
+    const LEN: usize = 5;
+
+    #[test]
+    fn identity_mapping_is_position_for_position() {
+        assert_eq!(entry_at(None, 0, LEN), 0);
+        assert_eq!(entry_at(None, 3, LEN), 3);
+        // Past the end (mpv briefly reports a stale position) clamps instead of panicking.
+        assert_eq!(entry_at(None, 99, LEN), LEN - 1);
+        assert_eq!(entry_at(None, 0, 0), 0);
+
+        assert_eq!(mpv_index(None, 2, LEN), Some(2));
+        assert_eq!(mpv_index(None, LEN, LEN), None);
+
+        assert_eq!(next_entry(None, 0, LEN), Some(1));
+        assert_eq!(
+            next_entry(None, LEN - 1, LEN),
+            None,
+            "no next after the last"
+        );
+    }
+
+    #[test]
+    fn a_sparse_map_translates_both_ways() {
+        for (pos, entry) in [(0, 0), (1, 2), (2, 4)] {
+            assert_eq!(entry_at(Some(SPARSE), pos, LEN), entry);
+            assert_eq!(mpv_index(Some(SPARSE), entry, LEN), Some(pos as i64));
+        }
+        // Unmatched entries are in no mpv playlist, so they have no mpv index.
+        assert_eq!(mpv_index(Some(SPARSE), 1, LEN), None);
+        assert_eq!(mpv_index(Some(SPARSE), 3, LEN), None);
+    }
+
+    #[test]
+    fn next_skips_the_entries_mpv_never_got() {
+        // Playing entry 0: the next thing mpv will play is 2, not the unmatched 1.
+        assert_eq!(next_entry(Some(SPARSE), 0, LEN), Some(2));
+        assert_eq!(next_entry(Some(SPARSE), 1, LEN), Some(4));
+    }
+
+    #[test]
+    fn next_past_the_end_of_the_map_falls_back_to_our_own_list() {
+        // Last mapped position: nothing follows in mpv's playlist, and entry 4 is the
+        // last entry we have either.
+        assert_eq!(next_entry(Some(SPARSE), 2, LEN), None);
+        // Same map, but the resolver has since appended two more entries: the next one
+        // is nameable even though mpv has not been told about it yet.
+        assert_eq!(next_entry(Some(SPARSE), 2, LEN + 2), Some(5));
+        // A position past the map entirely must not wrap around or panic.
+        assert_eq!(next_entry(Some(SPARSE), 99, LEN), Some(1));
+    }
 }
