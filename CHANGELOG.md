@@ -99,6 +99,38 @@ All notable changes to YTM-Player. Format based on
 
 ### Fixed
 
+- **A whole batch of 12 titles could still be dropped silently.** When `yt-dlp`
+  printed *nothing* usable for a batch - one dead SoundCloud link is enough - the
+  resolver moved to the next chunk and those twelve rows kept their raw ids
+  forever, while later batches resolved normally. Anything a batch leaves
+  unresolved is now retried once, individually, so a bad link costs only itself.
+- **The spectrum flattening into a solid wall on loud tracks.** Band levels are
+  normalised against a fixed 64 dB floor, which is right for material mastered
+  near the design target and useless for anything hotter: every band lands within
+  a few percent of the top. The spectrum now levels each frame against a
+  slowly-falling loudness reference (instant attack, gradual release, floored so
+  silence stays flat), and loud and quiet material both read correctly.
+- **A panic in a background thread left the terminal unusable.** The terminal
+  guard only covered an unwind on the main thread; a panic in the tap reader, a
+  resolver or a download thread left raw mode and the alternate screen on, with
+  the panic message itself unreadable. A `std::panic` hook now restores the
+  terminal from any thread.
+- **A blank pane while a track was caching.** mpv publishes no `media-title`
+  until the stream is open, so the title row rendered empty - and in video mode,
+  with no picture yet, the pane had nothing in it at all. It now reads `caching…`
+  or `loading…`.
+- **An unresponsive mpv froze the UI for a second and a half.** The IPC read
+  timeout is a stall budget on a local Unix socket, where replies take well under
+  a millisecond; it is now 150 ms.
+- **A wedged `yt-dlp` held the download slot forever.** After its output closes
+  it gets 20 seconds to exit and is then terminated, instead of freezing the row
+  mid-percentage.
+- **A crash mid-save could empty the config.** Settings are written to a temp
+  file and renamed over the config, so it is either the old one or the new one.
+- **Abandoned `.part` files and `ytmviz_<pid>` FIFO directories piled up.**
+  A killed download leaves gigabytes nobody will resume, and a SIGKILLed player
+  leaves 17 FIFOs behind. Both are swept at startup - parts only once they are
+  older than a day, so a download in flight is never touched.
 - **Playlist titles resolving in blocks of 12 or not at all.** `yt-dlp` exits 1
   when *any* URL in a batch is dead (private, deleted, geo-blocked), even under
   `--ignore-errors`, while still printing every title it did resolve. The
@@ -108,6 +140,10 @@ All notable changes to YTM-Player. Format based on
 
 ### Changed
 
+- `src/viz.rs` is now `src/audio_tap.rs`: capture (`audio_tap`) and rendering
+  (`visualizer`) no longer sit behind two filenames one letter apart. `curl`,
+  which reads Spotify links, is declared as an optional dependency in the Arch,
+  Debian and RPM packaging.
 - Play/pause moved from `p` to `Space` (a click on the status line still works);
   `p` now opens the playlist view.
 - `Tab` quality cycling is gone; quality and save format live in the settings
