@@ -57,6 +57,12 @@ So it's Rust now: one binary, JSON parsed natively, the socket a plain
   already decoding and streams levels to the renderers ~45 times a second, so
   the picture is always in sync — and the scopes live *inside* the player UI,
   next to the volume rail and the queue, instead of taking the screen over.
+- **`e` opens an effects rack** — echo, small-room reverb, a +8 dB bass shelf,
+  nightcore, centre-cancel karaoke and a slow 8D orbit, any combination at once.
+  They are libavfilter chains dropped into the same `af` graph the scopes tap,
+  so the picture follows what you hear and nothing spawns a second process.
+  Downloads read the demuxer, upstream of every filter: what you save is always
+  the clean track. Adding an effect is one line in `src/effects.rs`.
 - **`d` saves the current track** into `downloads/` in the background, with a
   live percentage. At the default MP3 tier it's instant and needs no network at
   all — the audio was already captured while it streamed past.
@@ -66,11 +72,17 @@ So it's Rust now: one binary, JSON parsed natively, the socket a plain
 - **Clipboard watch (off by default).** Flip it on in settings and any YouTube,
   SoundCloud or Spotify link you copy anywhere on the system queues itself as
   the next track, with a toast to say so.
+- **Crossfade (off by default).** Turn it on in settings and tracks fade into
+  each other on auto-advance — 3 to 15 seconds, 5 by default, split across the
+  outgoing and incoming track. mpv decodes gaplessly and opens the next entry
+  early, so the seam under the fade has no silence in it. Skipping by hand still
+  cuts instantly, the last track of a queue plays out clean, and anything
+  shorter than twice the transition never fades at all.
 - **A settings menu on `s`** — video/download quality (`480p → 720p → 1080p →
-  Best`), save format (MP3 or MP4), smart loading, and the clipboard watcher,
-  persisted to `~/.config/ytmplayer/config`. The format is smart: SoundCloud and
-  Spotify are audio-only sources, so they always save MP3 whatever the default
-  says.
+  Best`), save format (MP3 or MP4), smart loading, the clipboard watcher, and
+  crossfade with its length, persisted to `~/.config/ytmplayer/config`. The
+  format is smart: SoundCloud and Spotify are audio-only sources, so they always
+  save MP3 whatever the default says.
 - **A playlist view on `p`** — every entry titled, scrollable, click or `Enter`
   to jump. `d` there downloads the whole playlist, with a live queued/%/saved
   column per track; pressing `d` again cancels. The main view always shows what
@@ -179,8 +191,9 @@ ytmplayer ~/Music          # a folder — or a file, or an .m3u/.pls list
 | `n` / `b` | Next / previous track (playlists) |
 | `o` | Add a link or path — plays right after the current track |
 | `p` | Queue view: scroll, jump to a track, download the whole list |
+| `e` | Effects rack: echo, reverb, bass, nightcore, karaoke, 8D |
 | `e` | In the queue: edit mode — `J` / `K` move the selected track |
-| `s` | Settings: quality, save format, smart loading, clipboard watch |
+| `s` | Settings: quality, save format, smart loading, clipboard, crossfade |
 | `v` | Toggle ASCII video |
 | `c` | Cycle live scopes: spectrum analyzer, stereo waveform, VU meters |
 | `d` | Download the current track — or, in the queue view, everything (again cancels) |

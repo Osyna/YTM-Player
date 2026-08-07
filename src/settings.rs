@@ -241,8 +241,10 @@ mod tests {
         assert_eq!(Settings::from_kv("crossfade_secs=1").crossfade_secs, 3);
         assert_eq!(Settings::from_kv("crossfade_secs=soon").crossfade_secs, 5);
 
-        let mut s = Settings::default();
-        s.crossfade_secs = CROSSFADE_MAX;
+        let mut s = Settings {
+            crossfade_secs: CROSSFADE_MAX,
+            ..Settings::default()
+        };
         s.cycle_crossfade(true);
         assert_eq!(s.crossfade_secs, CROSSFADE_MIN);
         s.cycle_crossfade(false);

@@ -769,28 +769,63 @@ pub fn spawn_title_resolver(items: Vec<(usize, String)>) -> Receiver<TitleEvent>
             ];
             args.extend(chunk.iter().map(|(_, url)| url.as_str()));
             let stdout = ytdlp_partial(&args);
-            for line in stdout.lines() {
-                let Some((url, title)) = line.trim().split_once('\u{1f}') else {
-                    continue;
-                };
-                if title.is_empty() || title == "NA" {
-                    continue;
-                }
-                if let Some(index) = waiting.get_mut(url).and_then(VecDeque::pop_front)
-                    && tx
-                        .send(TitleEvent {
-                            index,
-                            url: url.to_string(),
-                            title: title.to_string(),
-                        })
-                        .is_err()
-                {
+            for event in take_titles(&stdout, &mut waiting) {
+                if tx.send(event).is_err() {
                     return; // player gone
+                }
+            }
+
+            // A single dead URL can make yt-dlp print nothing for the whole batch, which
+            // used to leave its 11 innocent neighbours showing raw ids forever. Retry
+            // whatever the batch left unresolved, one URL at a time, so one bad link only
+            // costs itself.
+            let leftovers: Vec<&str> = waiting
+                .iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .map(|(url, _)| *url)
+                .collect();
+            for url in leftovers {
+                let stdout = ytdlp_partial(&[
+                    "--no-playlist",
+                    "--skip-download",
+                    "--ignore-errors",
+                    "--no-warnings",
+                    "--print",
+                    "%(original_url)s\u{1f}%(title)s",
+                    url,
+                ]);
+                for event in take_titles(&stdout, &mut waiting) {
+                    if tx.send(event).is_err() {
+                        return; // player gone
+                    }
                 }
             }
         }
     });
     rx
+}
+
+/// Turn yt-dlp `url\u{1f}title` lines into events, consuming each match from `waiting`.
+/// Split out from the resolver thread so the batch/retry bookkeeping is testable without
+/// running yt-dlp: whatever is left in `waiting` afterwards is exactly what got no title.
+fn take_titles(stdout: &str, waiting: &mut HashMap<&str, VecDeque<usize>>) -> Vec<TitleEvent> {
+    let mut events = Vec::new();
+    for line in stdout.lines() {
+        let Some((url, title)) = line.trim().split_once('\u{1f}') else {
+            continue;
+        };
+        if title.is_empty() || title == "NA" {
+            continue;
+        }
+        if let Some(index) = waiting.get_mut(url).and_then(VecDeque::pop_front) {
+            events.push(TitleEvent {
+                index,
+                url: url.to_string(),
+                title: title.to_string(),
+            });
+        }
+    }
+    events
 }
 
 /// Resolve `(entry index, query)` searches on a background thread, streaming each match as it
@@ -1174,6 +1209,56 @@ fn extract_destination(line: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::settings::VideoQuality;
+
+    fn waiting_for<'a>(urls: &[&'a str]) -> HashMap<&'a str, VecDeque<usize>> {
+        let mut waiting: HashMap<&str, VecDeque<usize>> = HashMap::new();
+        for (i, url) in urls.iter().enumerate() {
+            waiting.entry(url).or_default().push_back(i);
+        }
+        waiting
+    }
+
+    #[test]
+    fn take_titles_matches_lines_back_to_entries() {
+        let mut waiting = waiting_for(&["a", "b", "c"]);
+        // Out of order, with a junk line and an "NA" title in the middle.
+        let out = "c\u{1f}Third\nnot a pair\nb\u{1f}NA\na\u{1f}First\n";
+        let events = take_titles(out, &mut waiting);
+        let mut got: Vec<(usize, String)> =
+            events.into_iter().map(|e| (e.index, e.title)).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![(0, "First".to_string()), (2, "Third".to_string())]
+        );
+        // Only the unresolved URL is left, which is what the retry pass picks up.
+        assert_eq!(waiting["b"].len(), 1);
+        assert!(waiting["a"].is_empty() && waiting["c"].is_empty());
+    }
+
+    #[test]
+    fn empty_batch_leaves_every_url_for_the_retry_pass() {
+        // One dead link can make yt-dlp print nothing for the whole batch; the retry
+        // pass must then see all of them, not none.
+        let mut waiting = waiting_for(&["a", "b", "c"]);
+        assert!(take_titles("", &mut waiting).is_empty());
+        let leftovers = waiting.values().filter(|q| !q.is_empty()).count();
+        assert_eq!(leftovers, 3, "the retry pass must see all three URLs");
+
+        // The individual retry for "b" resolves only "b" and clears it.
+        let events = take_titles("b\u{1f}Second\n", &mut waiting);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].index, 1);
+        assert!(waiting["b"].is_empty());
+    }
+
+    #[test]
+    fn duplicate_urls_resolve_one_entry_per_line() {
+        let mut waiting = waiting_for(&["a", "a"]);
+        assert_eq!(take_titles("a\u{1f}One\n", &mut waiting)[0].index, 0);
+        assert_eq!(waiting["a"].len(), 1);
+        assert_eq!(take_titles("a\u{1f}One\n", &mut waiting)[0].index, 1);
+    }
 
     #[test]
     fn merged_selector_splits_video_from_audio() {

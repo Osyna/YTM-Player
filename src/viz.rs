@@ -35,7 +35,7 @@ const FREQS: [u32; BAND_COUNT] = [
 const FULL_FLOOR: f32 = 60.0;
 /// Bandpassed branches carry less energy per band; a slightly deeper floor keeps the
 /// spectrum lively at ordinary programme levels (pink noise sits near -24 dB per band).
-const BAND_FLOOR: f32 = 64.0;
+pub const BAND_FLOOR: f32 = 64.0;
 
 /// How much wave history the tap keeps. At ~45 samples/s this is over 40 seconds -
 /// more than any terminal width the scope will ever scroll across.

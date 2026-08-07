@@ -349,15 +349,36 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let mut f = String::new();
-        push(&mut f, DisableBracketedPaste);
-        push(&mut f, DisableMouseCapture);
-        push(&mut f, Show);
-        push(&mut f, LeaveAlternateScreen);
-        push(&mut f, EnableLineWrap);
-        let _ = self.0.paint(f.as_bytes());
+        let _ = self.0.paint(restore_sequence().as_bytes());
         let _ = disable_raw_mode();
     }
+}
+
+/// Everything [`TerminalGuard`] undoes, as one frame.
+fn restore_sequence() -> String {
+    let mut f = String::new();
+    push(&mut f, DisableBracketedPaste);
+    push(&mut f, DisableMouseCapture);
+    push(&mut f, Show);
+    push(&mut f, LeaveAlternateScreen);
+    push(&mut f, EnableLineWrap);
+    f
+}
+
+/// Restore the terminal from *any* thread's panic, then panic normally.
+///
+/// [`TerminalGuard`]'s `Drop` only covers an unwind on the main thread. The player runs
+/// several background threads (tap reader, title/search resolvers, downloads, video
+/// forwarder); a panic in one of those - or anywhere before the guard exists - would
+/// otherwise leave raw mode and the alternate screen on, and the panic message itself
+/// unreadable.
+pub fn install_panic_hook(term: tty::Terminal) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = term.paint(restore_sequence().as_bytes());
+        previous(info);
+    }));
 }
 
 /// Re-apply our terminal state after mpv's `tct` output tears itself down.
@@ -1048,7 +1069,7 @@ fn draw_main(
     if state.is_playlist {
         transport.push(Btn::new("b", "Prev", Action::Prev).icon("⇤"));
         transport.push(Btn::new("n", "Next", Action::Next).icon("⇥"));
-    features.push(Btn::new("s", "Setup", Action::OpenSettings).icon("⚙"));
+    }
     frame.render_widget(
         Paragraph::new(button_row(map, keys1_a, &transport)),
         keys1_a,
@@ -1059,7 +1080,7 @@ fn draw_main(
     if state.is_playlist {
         features.push(Btn::new("p", "Queue", Action::OpenPlaylist).icon("≡"));
     }
-    features.push(Btn::new("s", "Settings", Action::OpenSettings).icon("⚙"));
+    features.push(Btn::new("s", "Setup", Action::OpenSettings).icon("⚙"));
     features.push(
         Btn::new("v", "Video", Action::ToggleVideo)
             .icon("▣")
@@ -1584,9 +1605,9 @@ fn draw_effects(frame: &mut Frame, state: &UiState, map: &mut ClickMap) {
             frame.render_widget(
                 Paragraph::new(Line::styled(
                     "effects layer onto the playing audio — scopes follow; saves stay clean",
-    features.push(Btn::new("s", "Setup", Action::OpenSettings).icon("⚙"));
+                    faint(),
                 )),
-        Btn::new("e", "FX", Action::OpenEffects)
+                note_a,
             );
         }
     }
@@ -1675,9 +1696,9 @@ pub fn video_bottom(state: &UiState) -> (String, ClickMap) {
     if state.is_playlist {
         features.push(Btn::new("p", "Queue", Action::OpenPlaylist).icon("≡"));
     }
-    features.push(Btn::new("s", "Settings", Action::OpenSettings).icon("⚙"));
+    features.push(Btn::new("s", "Setup", Action::OpenSettings).icon("⚙"));
     features.push(
-        Btn::new("e", "Effects", Action::OpenEffects)
+        Btn::new("e", "FX", Action::OpenEffects)
             .icon("♪")
             .hot(state.effects_on.iter().any(|&on| on)),
     );
@@ -2046,7 +2067,7 @@ mod tests {
         let rows = entries();
         let ui = state(&rows, &s, &dl);
         let (text, map) = render_to_text(&ui);
-        assert!(text.contains("(e) ♪ Effects"), "no effects button: {text}");
+        assert!(text.contains("(e) ♪ FX"), "no effects button: {text}");
         let mut hit = None;
         for y in 0..30u16 {
             for x in 0..100u16 {
@@ -2230,7 +2251,7 @@ mod tests {
         ui.term_rows = 12; // below MIN_SCOPE_ROWS (20) and video's 13
         let (text, map) = render_sized(&ui, 100, 12);
         assert!(!text.contains("SCOPE"), "scope pane should be gone");
-        assert!(text.contains("(e) ♪ FX"), "no effects button: {text}");
+        for y in 0..12u16 {
             for x in 0..100u16 {
                 let action = map.action_at(x, y);
                 assert_ne!(action, Some(Action::CycleVisualizer), "scope clickable");

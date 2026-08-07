@@ -118,6 +118,9 @@ fn run() -> AppResult<()> {
     // From here on exactly one thing writes to this terminal. mpv's `tct` frames come to us
     // on a pipe and are forwarded by the same writer that paints the status bar.
     let term = tty::Terminal::new();
+    // Installed before raw mode is ever enabled, so no panic path can leave the terminal
+    // in the alternate screen with echo off.
+    ui::install_panic_hook(term.clone());
     if let Some(video) = mpv.video_out.take() {
         let forwarder = term.clone();
         std::thread::spawn(move || forwarder.forward(video));

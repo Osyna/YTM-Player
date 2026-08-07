@@ -9,7 +9,7 @@
 //! Adding one is a struct with a [`Visualizer`] impl plus one line in [`all`]. State
 //! (peak caps, smoothing) lives in the struct; the snapshot is pure data.
 
-use crate::viz::{BAND_COUNT, VizSnapshot};
+use crate::viz::{BAND_COUNT, BAND_FLOOR, VizSnapshot};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -61,11 +61,58 @@ fn heat(t: f32) -> Color {
 // Spectrum: per-band bars with falling peak caps
 // ---------------------------------------------------------------------------
 
+/// dB range the spectrum spreads across, measured down from the running reference.
+/// Everything quieter than `reference - AGC_SPAN` reads as an empty bar.
+const AGC_SPAN: f32 = 42.0;
+/// Headroom: the loudest band of the frame sits here rather than jammed at the ceiling,
+/// so a band that then gets louder still has somewhere to go.
+const AGC_TOP: f32 = 0.94;
+/// How fast the reference falls (dB per frame) when nothing is that loud any more.
+/// At the tap's ~45 fps this crosses a 20 dB drop in roughly five seconds.
+const AGC_DECAY_DB: f32 = 0.09;
+/// The reference never falls below this. Silence measures around -64 dB per band,
+/// which is more than [`AGC_SPAN`] below this floor, so quiet passages and room tone
+/// stay near the baseline instead of being amplified into a full-height wall.
+const AGC_REF_MIN_DB: f32 = -20.0;
+
+/// Undo [`crate::viz::BAND_FLOOR`]'s fixed normalisation back into dB.
+fn band_db(level: f32) -> f32 {
+    level.clamp(0.0, 1.0).mul_add(BAND_FLOOR, -BAND_FLOOR)
+}
+
+/// Level the bars against a slowly-falling loudness reference.
+///
+/// The tap normalises each band against a fixed 64 dB floor, which is right for
+/// programme material mastered near the design target and useless for anything
+/// louder: every band lands in the top few percent and the spectrum flattens into a
+/// wall. This re-spreads the frame relative to its own recent maximum - fast attack
+/// (the reference jumps to any louder band immediately), slow release, floored so a
+/// quiet passage is not blown up to full height.
+fn agc_bands(reference_db: &mut f32, bands: &[f32; BAND_COUNT]) -> [f32; BAND_COUNT] {
+    let frame_max_db = bands.iter().copied().fold(f32::NEG_INFINITY, |a, b| {
+        let db = band_db(b);
+        if db > a { db } else { a }
+    });
+    *reference_db = (*reference_db - AGC_DECAY_DB)
+        .max(frame_max_db)
+        .max(AGC_REF_MIN_DB);
+
+    let mut out = [0.0f32; BAND_COUNT];
+    for (slot, &level) in out.iter_mut().zip(bands.iter()) {
+        *slot = ((band_db(level) - *reference_db) / AGC_SPAN)
+            .mul_add(AGC_TOP, AGC_TOP)
+            .clamp(0.0, 1.0);
+    }
+    out
+}
+
 pub struct Spectrum {
     /// Displayed level per band, chased toward the live value for a little inertia.
     smooth: [f32; BAND_COUNT],
     /// Peak cap per band, falling slowly until the bar pushes it back up.
     caps: [f32; BAND_COUNT],
+    /// Running loudness reference in dB for [`agc_bands`].
+    reference_db: f32,
 }
 
 impl Default for Spectrum {
@@ -73,6 +120,7 @@ impl Default for Spectrum {
         Spectrum {
             smooth: [0.0; BAND_COUNT],
             caps: [0.0; BAND_COUNT],
+            reference_db: AGC_REF_MIN_DB,
         }
     }
 }
@@ -92,7 +140,8 @@ impl Visualizer for Spectrum {
         let x0 = area.x + area.width.saturating_sub(used) / 2;
         let h = area.height;
 
-        for (i, &target) in viz.bands.iter().enumerate() {
+        let leveled = agc_bands(&mut self.reference_db, &viz.bands);
+        for (i, &target) in leveled.iter().enumerate() {
             let target = if viz.live { target } else { 0.0 };
             // Fast attack, slower release: punchy but not jittery.
             let s = &mut self.smooth[i];
@@ -341,6 +390,76 @@ mod tests {
             wave: vec![(level, level); 64],
             live: true,
         }
+    }
+
+    /// Level in the tap's normalisation for a given per-band dB.
+    fn at_db(db: f32) -> f32 {
+        (db + BAND_FLOOR) / BAND_FLOOR
+    }
+
+    #[test]
+    fn agc_spreads_a_hot_frame_instead_of_flattening_it() {
+        // Loud modern master: every band within a few dB of the top, which the fixed
+        // 64 dB floor squeezes into an indistinguishable wall.
+        let mut bands = [at_db(-6.0); BAND_COUNT];
+        bands[0] = at_db(-3.0);
+        bands[8] = at_db(-18.0);
+        bands[15] = at_db(-40.0);
+        assert!(
+            bands[0] - bands[1] < 0.05,
+            "premise: raw levels are nearly identical"
+        );
+
+        let mut reference = AGC_REF_MIN_DB;
+        let out = agc_bands(&mut reference, &bands);
+        assert!(
+            (reference - (-3.0)).abs() < 0.001,
+            "reference tracks the peak"
+        );
+        assert!(out[0] > out[1], "loudest band must still lead");
+        assert!(
+            out[1] - out[8] > 0.2,
+            "12 dB apart should be visibly apart: {} vs {}",
+            out[1],
+            out[8]
+        );
+        assert!(out[15] < 0.15, "a dead band must read as near-empty");
+        assert!(out[0] <= 1.0 && out[0] >= AGC_TOP - 0.01, "headroom kept");
+    }
+
+    #[test]
+    fn agc_does_not_amplify_silence() {
+        let mut reference = AGC_REF_MIN_DB;
+        let quiet = [at_db(-70.0); BAND_COUNT];
+        for _ in 0..200 {
+            let out = agc_bands(&mut reference, &quiet);
+            assert!(
+                out.iter().all(|&v| v < 0.1),
+                "silence must stay flat, got {out:?}"
+            );
+        }
+        assert!(reference >= AGC_REF_MIN_DB);
+    }
+
+    #[test]
+    fn agc_attacks_instantly_and_releases_slowly() {
+        let mut reference = AGC_REF_MIN_DB;
+        agc_bands(&mut reference, &[at_db(-2.0); BAND_COUNT]);
+        assert!((reference - (-2.0)).abs() < 0.001, "instant attack");
+
+        // One quiet frame must not immediately rescale the whole display.
+        let quiet = [at_db(-30.0); BAND_COUNT];
+        agc_bands(&mut reference, &quiet);
+        assert!(reference > -3.0, "release is gradual, not a jump");
+
+        // But a sustained quiet passage does settle - down to the floor at most.
+        for _ in 0..1000 {
+            agc_bands(&mut reference, &quiet);
+        }
+        assert!(
+            (reference - AGC_REF_MIN_DB).abs() < 0.5,
+            "reference should settle at the floor, got {reference}"
+        );
     }
 
     #[test]
