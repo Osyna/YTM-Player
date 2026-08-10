@@ -213,6 +213,18 @@ All notable changes to YTM-Player. Format based on
 
 ### Changed
 
+- **The README is a pitch now, not just a reference.** The old one opened straight
+  into a wall of bullet points; this one leads with a hero screenshot, a nine-line
+  "what it does," and a six-image gallery (now playing, queue, scope, library,
+  the FX rack, the equalizer) before any of the detail. The full feature list is
+  still there in full, just behind a `<details>` fold instead of first. All seven
+  screenshots are freshly captured against the current build - the old four
+  predated the effects rack expansion, the equalizer and the keybar rework, and
+  two views (the library browser, the effects rack) had never been screenshotted
+  at all. Two stale facts caught in the process and fixed: "three views" (it is
+  four, the library pane included) and "five dependencies" (`unicode-width`
+  makes it six).
+
 - **The keybar reads `icon Label (key)` now, grouped into zones.** It used to be
   `(key) icon Label`, evenly spaced with nothing to say where one idea stopped and
   the next began - seven controls in a row look like seven equally important
