@@ -1,0 +1,26 @@
+# Echo out - the leaving track trails off into a real, fading echo.
+#
+# Used to be a top-end lift dressed up in the name: an echo whose tail cannot be
+# faded is a tail that never stops, which is worse than none, so `echo` was a
+# switch, not a knob. It is a lane now - `aecho`'s feedback riding up as the gain
+# rides down - so what plays out is an actual, decaying series of repeats instead of
+# a fixed EQ shape that only ever sounds like more top end.
+
+name    Echo out
+note    the leaving track trails off into a real echo
+align   free
+tempo   free
+power   constant
+
+lane out gain
+    at 0.0    1.0    power-down
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 1.0    1.0    hold
+
+lane out echo
+    at 0.0    0.0     linear
+    at 0.8    0.55    smooth
+    at 1.0    0.55    hold

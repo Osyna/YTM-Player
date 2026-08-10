@@ -1,0 +1,22 @@
+# Filter sweep - the leaving track is taken away under a lowpass.
+
+name    Filter sweep
+note    sweeps the leaving track away under a lowpass
+align   free
+tempo   free
+power   constant
+
+lane out gain
+    at 0.0    1.0    power-down
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 1.0    1.0    hold
+
+# Hz. The evaluator quantises this to a handful of steps on the way out, because every
+# distinct filter string rebuilds mpv's graph mid-playback.
+lane out lowpass
+    at 0.0    16000  smooth
+    at 0.95     250  hold
+    at 1.0        0  hold

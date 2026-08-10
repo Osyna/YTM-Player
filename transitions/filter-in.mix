@@ -1,0 +1,33 @@
+# Filter in - the arriving track comes through a hole in the wall and opens up.
+#
+# Nothing is done to the track that is leaving until quite late, so this works when the
+# outgoing one has a long enough outro to carry the mix by itself.
+
+name    Filter in
+note    the arriving track opens up from a thin, distant filter
+align   free
+tempo   free
+power   free
+
+lane out gain
+    at 0.0    1.0    hold
+    at 0.6    1.0    smooth
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    smooth
+    at 0.35   1.0    hold
+    at 1.0    1.0    hold
+
+# Both ends squeezed at once: it starts as a midrange whisper and widens.
+lane in highpass
+    at 0.0    1000   smooth
+    at 0.6     120   smooth
+    at 0.85      0   hold
+    at 1.0       0   hold
+
+lane in lowpass
+    at 0.0    2000   smooth
+    at 0.6   12000   smooth
+    at 0.85      0   hold
+    at 1.0       0   hold

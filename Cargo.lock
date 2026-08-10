@@ -1741,6 +1741,7 @@ version = "3.0.0"
 dependencies = [
  "crossterm",
  "ctrlc",
+ "libc",
  "parking_lot",
  "ratatui",
  "serde_json",

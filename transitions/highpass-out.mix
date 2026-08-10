@@ -1,0 +1,33 @@
+# Highpass out - the leaving track is thinned to nothing but its hats, then let go.
+#
+# The mirror of a filter sweep, and the more common move of the two on a busy floor: taking
+# the bottom out rather than the top leaves the rhythm audible while the body of the track
+# disappears, so the new one has somewhere to arrive without the mix ever going quiet.
+
+name    Highpass out
+note    thins the leaving track to its hats before letting it go
+align   beat
+tempo   free
+power   free
+
+lane out gain
+    at 0.0    1.0    hold
+    at 0.75   1.0    smooth
+    at 1.0    0.0    hold
+
+lane out highpass
+    at 0.0      60    smooth
+    at 0.75   4000    smooth
+    at 1.0    8000    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 0.75   1.0    hold
+    at 1.0    1.0    hold
+
+# It arrives with its own bottom trimmed so the two do not fight over the low end while
+# both are up, and opens out as the old one thins.
+lane in bass
+    at 0.0    -18    smooth
+    at 0.6      0    hold
+    at 1.0      0    hold

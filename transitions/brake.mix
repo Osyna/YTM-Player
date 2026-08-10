@@ -1,0 +1,32 @@
+# Brake - the leaving track is stopped like a hand on the platter, then the new one is in.
+#
+# The pitch falls with the speed, because that fall *is* the sound; correcting it would
+# leave a track that quietly slows down, which is not a brake at all. The stop takes about
+# an eighth of the span, so at a fifteen-second setting it is a couple of seconds - any
+# longer and it stops sounding deliberate.
+
+name    Brake
+note    stops the leaving track dead, then drops the new one in
+align   beat
+tempo   free
+power   free
+
+lane out gain
+    at 0.0    1.0    hold
+    at 0.62   1.0    smooth
+    at 0.75   0.0    hold
+    at 1.0    0.0    hold
+
+# 1.0 is the track's own speed; 0.05 is as slow as mpv will play rather than stall.
+lane out speed
+    at 0.0    1.0    hold
+    at 0.62   1.0    smooth
+    at 0.75   0.05   hold
+    at 1.0    0.05   hold
+
+lane in gain
+    at 0.0    0.0    hold
+    at 0.75   1.0    hold
+    at 1.0    1.0    hold
+
+hook at 0.62   toast brake

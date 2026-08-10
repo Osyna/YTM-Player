@@ -80,6 +80,9 @@ struct VizData {
     bands: [f32; BAND_COUNT],
     rms: [f32; 2],
     peak: [f32; 2],
+    hold: [f32; 2],
+    /// When each channel's held peak was set, so it knows how long to sit before falling.
+    held_at: [Instant; 2],
     wave: VecDeque<(f32, f32)>,
     last: Instant,
 }
@@ -130,6 +133,8 @@ impl Tap {
             bands: [0.0; BAND_COUNT],
             rms: [0.0; 2],
             peak: [0.0; 2],
+            hold: [0.0; 2],
+            held_at: [Instant::now(); 2],
             wave: VecDeque::with_capacity(WAVE_CAP),
             last: Instant::now() - LIVE_WINDOW * 10,
         }));
@@ -185,6 +190,17 @@ impl Tap {
 
     /// Latest data, shaped for rendering. `wave` returns at most `wave_len` newest
     /// samples, oldest first.
+    /// Just the levels, without copying the waveform history.
+    ///
+    /// The meter runs whenever anything is playing, which the scope does not: it is a
+    /// permanent part of the frame rather than one view among several. Handing it the full
+    /// snapshot would mean collecting a couple of thousand samples of history, every
+    /// frame, for four numbers - so this is the same read with the expensive part left out.
+    pub fn levels(&self) -> ([f32; 2], [f32; 2], bool) {
+        let data = self.data.lock();
+        (data.peak, data.hold, data.last.elapsed() < LIVE_WINDOW)
+    }
+
     pub fn snapshot(&self, wave_len: usize) -> VizSnapshot {
         let data = self.data.lock();
         let skip = data.wave.len().saturating_sub(wave_len);
@@ -310,6 +326,37 @@ fn parse_full(text: &str, pending: &mut [Option<f32>; 4], data: &Mutex<VizData>)
     }
 }
 
+/// How long a held peak sits before it starts to fall, and how fast it falls after that.
+///
+/// Both are borrowed from hardware, because the numbers there were chosen by people
+/// watching them for a living. A second is long enough to read a transient that has already
+/// gone; a fall of about half the scale per second is slow enough to follow with the eye
+/// and fast enough not to lie about what is happening now.
+const HOLD_FOR: Duration = Duration::from_millis(1000);
+const HOLD_FALL_PER_SEC: f32 = 0.5;
+
+/// Rise instantly, sit, then fall - the ballistics of every peak meter ever built.
+fn hold_peaks(d: &mut VizData, peak: [f32; 2], now: Instant) {
+    for ((held, held_at), now_peak) in d.hold.iter_mut().zip(&mut d.held_at).zip(peak) {
+        if now_peak >= *held {
+            *held = now_peak;
+            *held_at = now;
+            continue;
+        }
+        let waited = now.saturating_duration_since(*held_at);
+        let Some(falling) = waited.checked_sub(HOLD_FOR) else {
+            continue; // still sitting at the top
+        };
+        let dropped = HOLD_FALL_PER_SEC * falling.as_secs_f32();
+        // Never below the live peak: the mark is the highest recent value, and the value
+        // happening right now is one of those.
+        *held = (*held - dropped).max(now_peak).max(0.0);
+        if *held <= now_peak {
+            *held_at = now;
+        }
+    }
+}
+
 fn commit_full(pending: &mut [Option<f32>; 4], data: &Mutex<VizData>) {
     let Some(rms_l) = pending[0] else {
         return; // marker before any keys (start of stream)
@@ -320,6 +367,7 @@ fn commit_full(pending: &mut [Option<f32>; 4], data: &Mutex<VizData>) {
     let mut d = data.lock();
     d.rms = [rms_l, rms_r];
     d.peak = [peak_l, peak_r];
+    hold_peaks(&mut d, [peak_l, peak_r], Instant::now());
     if d.wave.len() == WAVE_CAP {
         d.wave.pop_front();
     }
@@ -330,6 +378,44 @@ fn commit_full(pending: &mut [Option<f32>; 4], data: &Mutex<VizData>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_peak_rises_at_once_sits_then_falls() {
+        let mut d = VizData {
+            bands: [0.0; BAND_COUNT],
+            rms: [0.0; 2],
+            peak: [0.0; 2],
+            hold: [0.0; 2],
+            held_at: [Instant::now(); 2],
+            wave: VecDeque::new(),
+            last: Instant::now(),
+        };
+        let t0 = Instant::now();
+
+        // Up instantly: a transient that is gone before the next frame still has to show.
+        hold_peaks(&mut d, [0.9, 0.2], t0);
+        assert!((d.hold[0] - 0.9).abs() < 1e-6);
+
+        // Then it sits, so there is time to read it.
+        hold_peaks(&mut d, [0.1, 0.1], t0 + Duration::from_millis(900));
+        assert!(
+            (d.hold[0] - 0.9).abs() < 1e-6,
+            "fell while it should have been held"
+        );
+
+        // And only then falls, at the stated rate.
+        hold_peaks(&mut d, [0.1, 0.1], t0 + Duration::from_millis(1500));
+        let expected = 0.9 - HOLD_FALL_PER_SEC * 0.5;
+        assert!(
+            (d.hold[0] - expected).abs() < 0.01,
+            "held {} after half a second of falling, expected about {expected}",
+            d.hold[0]
+        );
+
+        // Never below what is happening now, whatever the arithmetic says.
+        hold_peaks(&mut d, [0.8, 0.1], t0 + Duration::from_millis(5000));
+        assert!(d.hold[0] >= 0.8);
+    }
 
     #[test]
     fn sweep_removes_dead_taps_and_keeps_live_ones() {
@@ -359,6 +445,8 @@ mod tests {
                 bands: [0.0; BAND_COUNT],
                 rms: [0.0; 2],
                 peak: [0.0; 2],
+                hold: [0.0; 2],
+                held_at: [Instant::now(); 2],
                 wave: VecDeque::new(),
                 last: Instant::now(),
             })),
@@ -395,6 +483,8 @@ mod tests {
             bands: [0.0; BAND_COUNT],
             rms: [0.0; 2],
             peak: [0.0; 2],
+            hold: [0.0; 2],
+            held_at: [Instant::now(); 2],
             wave: VecDeque::new(),
             last: Instant::now(),
         });
@@ -418,6 +508,8 @@ mod tests {
             bands: [0.0; BAND_COUNT],
             rms: [0.0; 2],
             peak: [0.0; 2],
+            hold: [0.0; 2],
+            held_at: [Instant::now(); 2],
             wave: VecDeque::new(),
             last: Instant::now(),
         });

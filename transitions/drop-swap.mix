@@ -1,0 +1,47 @@
+# Drop swap - eight bars of tension, then both tracks change place on one downbeat.
+#
+# The leaving track is hollowed out from underneath while the arriving one is built up
+# behind it with no bottom of its own, so that at the eighth bar there is nothing but
+# midrange - and then the swap puts a full track where an empty one was. The oldest trick
+# there is, and it still works.
+
+name    Drop swap
+note    8 bars of hollowing out, then both change place at once
+bars    8
+align   beat
+tempo   match
+power   free
+
+lane out gain
+    bar 0    1.0    hold
+    bar 6    1.0    smooth
+    bar 7    0.0    hold
+    bar 8    0.0    hold
+
+lane out bass
+    bar 0      0    smooth
+    bar 4    -40    hold
+    bar 8    -40    hold
+
+lane out lowpass
+    bar 4   16000   smooth
+    bar 7     500   hold
+    bar 8     500   hold
+
+lane in gain
+    bar 0    0.0    hold
+    bar 2    0.0    smooth
+    bar 6    1.0    hold
+    bar 8    1.0    hold
+
+lane in bass
+    bar 0    -40    hold
+    bar 7      0    hold
+    bar 8      0    hold
+
+lane in tempo
+    bar 0    0.0    hold
+    bar 7    0.0    smooth
+    bar 8    1.0    hold
+
+hook bar 6   toast here it comes

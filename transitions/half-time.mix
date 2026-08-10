@@ -1,0 +1,48 @@
+# Half time - the leaving track pulled down to half speed, then cut on the bar.
+#
+# Not the brake, which stops dead and is a tape stop. This lands on a ratio the music
+# actually has - half - so the last two bars are the same record an octave down and at
+# half the tempo, which still keeps time with the room while very obviously ending.
+#
+# `speed` drags the pitch with it by design (see the control's own note): the pitch
+# falling *is* the effect, and correcting it would leave a track playing slowly for no
+# audible reason.
+
+name    Half time
+note    the leaving track dropped an octave, then cut
+bars    4
+align   beat
+tempo   match
+power   free
+
+lane out gain
+    bar 0    1.0    hold
+    bar 3    1.0    hold
+    bar 4    0.0    hold
+
+lane out speed
+    bar 0    1.0    hold
+    bar 2    1.0    smooth
+    bar 3    0.5    hold
+    bar 4    0.5    hold
+
+# Its top end goes with its speed, because a half-speed record is a dull one and leaving
+# the hats up would give the trick away before it lands.
+lane out lowpass
+    bar 0   16000   smooth
+    bar 3    4000   hold
+    bar 4    4000   hold
+
+# The new track is already there underneath, at its own speed, so the cut is a cut to
+# something rather than to nothing.
+lane in gain
+    bar 0    0.0    power-up
+    bar 3    1.0    hold
+    bar 4    1.0    hold
+
+lane in tempo
+    bar 0    0.0    hold
+    bar 3    0.0    smooth
+    bar 4    1.0    hold
+
+hook bar 2    toast ½ half time

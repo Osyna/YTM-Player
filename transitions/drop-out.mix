@@ -1,0 +1,36 @@
+# Drop out - a bar of silence before the new track arrives.
+#
+# The whole mix is taken away for a moment. On a floor it reads as a mistake for about half
+# a second and then as intent, which is exactly the effect; on headphones it is a breath.
+# Short by design - the gap is an eighth of the span, so a couple of seconds at most.
+
+name    Drop out
+note    takes everything away for a moment, then the new track lands
+bars    8
+align   beat
+tempo   free
+power   free
+
+lane out gain
+    bar 0    1.0    hold
+    bar 3    1.0    smooth
+    bar 4    0.0    hold
+    bar 8    0.0    hold
+
+lane out lowpass
+    bar 2   16000   smooth
+    bar 4     250   hold
+    bar 8     250   hold
+
+# Nothing at all for a bar, then in.
+lane in gain
+    bar 0    0.0    hold
+    bar 5    0.0    hold
+    bar 8    1.0    hold
+
+lane in bass
+    bar 0    -40    hold
+    bar 5      0    hold
+    bar 8      0    hold
+
+hook bar 4   toast ...

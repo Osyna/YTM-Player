@@ -1,0 +1,26 @@
+# Sync cut - both locked, no fade at all, and the swap on a bar line.
+#
+# The two tracks are counting the same bars before anything is heard of the second one, so
+# the cut lands where the ear already expects a change. Then eight bars to hand the tempo
+# back, by which time the old track is long gone and nobody is comparing.
+
+name    Sync cut
+note    locked, then cut on the bar - no fade at all
+bars    16
+align   beat
+power   free
+
+lane out gain
+    bar 0     1.0    hold
+    bar 8     0.0    hold
+    bar 16    0.0    hold
+
+lane in gain
+    bar 0     0.0    hold
+    bar 8     1.0    hold
+    bar 16    1.0    hold
+
+lane in tempo
+    bar 0     0.0    hold
+    bar 8     0.0    smooth
+    bar 16    1.0    hold

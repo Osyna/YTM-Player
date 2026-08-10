@@ -1,0 +1,30 @@
+# Bass swap - what a hand does on the EQ, and the reason a mix sounds clean.
+#
+# Two kick drums never play at once: the arriving track has no low end until it is most
+# of the way in, and the leaving one loses its own at the same moment.
+
+name    Bass swap
+note    holds the arriving track's low end back until the swap
+align   beat
+tempo   free
+power   constant
+
+lane out gain
+    at 0.0    1.0    power-down
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 1.0    1.0    hold
+
+lane in bass
+    at 0.0   -40     smooth
+    at 0.5   -40     smooth
+    at 0.85    0     hold
+    at 1.0     0     hold
+
+lane out bass
+    at 0.0     0     smooth
+    at 0.5     0     smooth
+    at 0.9   -40     hold
+    at 1.0   -40     hold

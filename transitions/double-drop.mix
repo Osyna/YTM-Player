@@ -1,0 +1,57 @@
+# Double drop - both tracks locked and hollowed out, then everything at once.
+#
+# Sixteen bars of taking things away from both of them: the old one loses its bottom, the
+# new one never had any, and by bar twelve there is almost nothing left but midrange on two
+# tracks counting the same bars. Then the old one goes and the new one's low end arrives in
+# the same instant.
+#
+# It only works because they are in time with each other, which is what the tempo lane and
+# the bar alignment are for. Without a readable tempo the player runs the same moves on a
+# timer instead, and it is a good transition rather than a great one.
+
+name    Double drop
+note    both hollowed out and locked, then everything lands at once
+bars    16
+align   beat
+power   free
+
+lane out gain
+    bar 0     1.0    hold
+    bar 11    1.0    smooth
+    bar 12    0.0    hold
+    bar 16    0.0    hold
+
+lane out bass
+    bar 0       0    smooth
+    bar 6     -40    hold
+    bar 16    -40    hold
+
+lane out lowpass
+    bar 8   16000    smooth
+    bar 12    500    hold
+    bar 16    500    hold
+
+lane in gain
+    bar 0     0.0    hold
+    bar 4     0.0    smooth
+    bar 10    1.0    hold
+    bar 16    1.0    hold
+
+lane in bass
+    bar 0     -40    hold
+    bar 12      0    hold
+    bar 16      0    hold
+
+lane in mid
+    bar 0     -12    hold
+    bar 4     -12    smooth
+    bar 10      0    hold
+    bar 16      0    hold
+
+# Locked right through the drop, and only released once it is alone.
+lane in tempo
+    bar 0     0.0    hold
+    bar 12    0.0    smooth
+    bar 16    1.0    hold
+
+hook bar 10   toast both together

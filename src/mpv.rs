@@ -72,6 +72,7 @@ pub struct Mpv {
     inbox: String,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     exit_status: Option<ExitStatus>,
+    health: Health,
     /// mpv's `tct` frames, waiting to be handed to the terminal's single writer.
     pub video_out: Option<ChildStdout>,
 }
@@ -180,6 +181,7 @@ impl Mpv {
             inbox: String::new(),
             stderr_tail,
             exit_status: None,
+            health: Health::default(),
             video_out: child_video,
         })
     }
@@ -245,6 +247,15 @@ impl Mpv {
     }
 
     fn request(&mut self, command: Value) -> Result<Value, MpvError> {
+        let outcome = self.request_inner(command);
+        match &outcome {
+            Ok(_) => self.note_answered(),
+            Err(e) => self.note_missed(e.to_string()),
+        }
+        outcome
+    }
+
+    fn request_inner(&mut self, command: Value) -> Result<Value, MpvError> {
         let id = self.send(std::slice::from_ref(&command))?;
         // The socket also carries unsolicited events; skip those and wait for our reply.
         for _ in 0..MAX_INTERLEAVED_EVENTS {
@@ -260,9 +271,76 @@ impl Mpv {
         ))
     }
 
+    fn note_answered(&mut self) {
+        self.health.answered();
+    }
+
+    fn note_missed(&mut self, why: String) {
+        self.health.missed(why);
+    }
+
+    /// Why mpv looks wedged, or `None` while it is answering.
+    pub fn stalled(&self) -> Option<&str> {
+        self.health.stalled()
+    }
+
     pub fn run_command(&mut self, command: Value) -> Result<(), MpvError> {
         self.request(command)?;
         Ok(())
+    }
+
+    /// Run several commands in one pipelined write, draining their replies together.
+    ///
+    /// Rebuilding a playlist is one command per entry; at 183 entries that is 183
+    /// blocking round trips on the render thread if they go one at a time.
+    pub fn run_commands(&mut self, commands: &[Value]) -> Result<(), MpvError> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let first_id = self.send(commands)?;
+        let mut outstanding = commands.len();
+        for _ in 0..commands.len() + MAX_INTERLEAVED_EVENTS {
+            if outstanding == 0 {
+                break;
+            }
+            let Ok(reply) = self.read_json() else { break };
+            let Some(value) = reply else { continue };
+            if reply_slot(&value, first_id, commands.len()).is_some() {
+                outstanding -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// The playlist as mpv currently holds it, in order. The URLs we appended come back
+    /// verbatim, which is what lets a shuffled order be matched back onto our own entries.
+    pub fn playlist_urls(&mut self) -> Vec<String> {
+        self.get_property("playlist")
+            .as_ref()
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|e| {
+                        e.get("filename")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Replace the whole playlist with `urls`, without starting playback.
+    ///
+    /// For the parked crossfade deck, which has to agree with the playing one about both
+    /// contents *and* order - it is cued by index, so a deck that disagrees cues the
+    /// wrong track.
+    pub fn playlist_replace_quiet(&mut self, urls: &[String]) -> Result<(), MpvError> {
+        let mut commands = vec![json!(["playlist-clear"])];
+        commands.extend(urls.iter().map(|url| json!(["loadfile", url, "append"])));
+        self.run_commands(&commands)
     }
 
     /// Read several properties in a single round trip.
@@ -292,6 +370,13 @@ impl Mpv {
             answered[slot] = true;
             outstanding -= 1;
             out[slot] = reply_data(&mut value);
+        }
+        // A property that errored is normal; a batch where *nothing* came back at all is
+        // the socket, not the properties.
+        if outstanding == N && N > 0 {
+            self.note_missed("mpv answered none of a property batch".into());
+        } else {
+            self.note_answered();
         }
         out
     }
@@ -333,6 +418,31 @@ impl Mpv {
     /// Append `url` to the playlist; if nothing is playing (idle after running dry), start it.
     pub fn playlist_append(&mut self, url: &str) -> Result<(), MpvError> {
         self.run_command(json!(["loadfile", url, "append-play"]))
+    }
+
+    /// Append `url` without ever starting playback - what a parked crossfade deck wants:
+    /// it must stay silent while it mirrors the queue.
+    pub fn playlist_append_quiet(&mut self, url: &str) -> Result<(), MpvError> {
+        self.run_command(json!(["loadfile", url, "append"]))
+    }
+
+    pub fn set_pause(&mut self, paused: bool) -> Result<(), MpvError> {
+        self.set_property("pause", json!(paused))
+    }
+
+    /// `always` makes mpv pause at the end of *every* playlist entry instead of advancing.
+    ///
+    /// Set on the outgoing deck for the length of a crossfade: the deck must not start
+    /// playing the track the incoming deck is already halfway through, and "stop it the
+    /// moment the fade ends" is a race this removes outright.
+    pub fn set_keep_open(&mut self, always: bool) -> Result<(), MpvError> {
+        self.set_property("keep-open", json!(if always { "always" } else { "no" }))
+    }
+
+    /// Stop playback but keep the playlist, so a parked deck can be cued again later.
+    /// A bare `stop` empties the playlist, which would cost a full reload per transition.
+    pub fn stop_keep_playlist(&mut self) -> Result<(), MpvError> {
+        self.run_command(json!(["stop", "keep-playlist"]))
     }
 
     /// Move playlist entry `from` so it sits at index `to` (mpv semantics: the entry is
@@ -427,13 +537,70 @@ impl Mpv {
         self.set_property("af", json!(af.unwrap_or("")))
     }
 
-    /// Gapless decode plus opening the next playlist entry before the current one ends.
-    /// Together they remove the silent seam at an advance - the gap a crossfade would
-    /// otherwise fade into. Follows the crossfade setting.
-    pub fn set_seamless(&mut self, on: bool) -> Result<(), MpvError> {
-        let flag = if on { json!("yes") } else { json!("no") };
-        self.set_property("gapless-audio", flag.clone())?;
-        self.set_property("prefetch-playlist", flag)
+    /// Decode across a playlist advance without re-initialising the audio chain, so a
+    /// plain cut carries no silent seam of its own.
+    pub fn set_gapless(&mut self, on: bool) -> Result<(), MpvError> {
+        self.set_property("gapless-audio", json!(if on { "yes" } else { "no" }))
+    }
+
+    /// Open the next playlist entry before the current one ends. Off while a crossfade
+    /// deck is doing that job itself: two prefetches of the same entry is one wasted
+    /// yt-dlp run per track.
+    pub fn set_prefetch(&mut self, on: bool) -> Result<(), MpvError> {
+        self.set_property("prefetch-playlist", json!(on))
+    }
+
+    /// Reorder the playlist randomly, or put it back the way it came.
+    ///
+    /// mpv keeps the original order alongside the shuffled one, so unshuffling restores
+    /// it exactly rather than sorting into some order of its own. The currently playing
+    /// entry stays current either way, which is what makes this safe to flip mid-track.
+    pub fn shuffle_playlist(&mut self, on: bool) -> Result<(), MpvError> {
+        self.run_command(json!([if on {
+            "playlist-shuffle"
+        } else {
+            "playlist-unshuffle"
+        }]))
+    }
+
+    /// What happens at the end of the queue, and at the end of a track.
+    ///
+    /// `loop-file` beats `loop-playlist` in mpv, so exactly one of the two is ever on.
+    pub fn set_repeat(&mut self, queue: bool, track: bool) -> Result<(), MpvError> {
+        self.set_property("loop-file", json!(if track { "inf" } else { "no" }))?;
+        self.set_property("loop-playlist", json!(if queue { "inf" } else { "no" }))
+    }
+
+    /// Playback rate, 1.0 being the file's own.
+    ///
+    /// `correct_pitch` decides which of two different things this is. A beat-match wants
+    /// it on, so a deck pulled a few per cent still sounds like itself; a brake or a tape
+    /// stop wants it off, because the pitch falling *is* the effect.
+    ///
+    /// The floor is 0.05 rather than mpv's own 0.01: below about that it stalls instead of
+    /// playing very slowly, which measured as a hang rather than a slow-down.
+    pub fn set_rate(&mut self, speed: f64, correct_pitch: bool) -> Result<(), MpvError> {
+        self.set_property("audio-pitch-correction", json!(correct_pitch))?;
+        self.set_property("speed", json!(speed.clamp(0.05, 2.0)))
+    }
+
+    /// A beat-match: rate changed, pitch held.
+    pub fn set_speed(&mut self, speed: f64) -> Result<(), MpvError> {
+        self.set_rate(speed, true)
+    }
+
+    /// A-B loop over `(start, end)` seconds, or cancel one when `None` - mpv's own repeat,
+    /// which is what turns a held beat into a roll: set both ends behind the playhead and
+    /// mpv jumps back on its own every time it reaches the second one.
+    pub fn set_ab_loop(&mut self, window: Option<(f64, f64)>) -> Result<(), MpvError> {
+        let (a, b) = window.map_or((json!("no"), json!("no")), |(a, b)| (json!(a), json!(b)));
+        self.set_property("ab-loop-a", a)?;
+        self.set_property("ab-loop-b", b)
+    }
+
+    /// Level tracks against each other from their ReplayGain tags: `no`, `track`, `album`.
+    pub fn set_replaygain(&mut self, mode: &str) -> Result<(), MpvError> {
+        self.set_property("replaygain", json!(mode))
     }
 
     /// Hand mpv a video stream to play alongside the audio it is already playing, and select it.
@@ -500,6 +667,41 @@ impl Mpv {
     }
 }
 
+/// Whether mpv is still answering.
+///
+/// Every call site in this file discards the `Result`, and rightly so: a volume write
+/// that fails once is noise, and threading an error out of eighty of them would drown
+/// the one case that matters. This is that case. mpv is a local process on a unix socket
+/// and answers in well under a millisecond, so a *run* of missed replies is not a busy
+/// player, it is a wedged one - and without this the UI would carry on drawing a
+/// progress bar for a process that stopped talking.
+#[derive(Default)]
+struct Health {
+    misses: u32,
+    last_error: Option<String>,
+}
+
+impl Health {
+    /// How many consecutive misses mean it. Deliberately several: one happens whenever a
+    /// property is momentarily unavailable across a track change, and reporting that
+    /// would cry wolf at every transition.
+    const ENOUGH: u32 = 5;
+
+    fn answered(&mut self) {
+        self.misses = 0;
+        self.last_error = None;
+    }
+
+    fn missed(&mut self, why: String) {
+        self.misses = self.misses.saturating_add(1);
+        self.last_error = Some(why);
+    }
+
+    fn stalled(&self) -> Option<&str> {
+        (self.misses >= Self::ENOUGH).then(|| self.last_error.as_deref().unwrap_or("no reply"))
+    }
+}
+
 /// Which slot of a batch starting at `first_id` a reply belongs to, or `None` if it isn't one
 /// of ours: mpv interleaves unsolicited events with replies and may answer out of order.
 fn reply_slot(reply: &Value, first_id: u64, batch_len: usize) -> Option<usize> {
@@ -551,6 +753,32 @@ mod tests {
         assert_eq!(reply_slot(&json!({"event": "seek"}), 10, 3), None);
         assert_eq!(reply_slot(&json!({"request_id": 9}), 10, 3), None);
         assert_eq!(reply_slot(&json!({"request_id": 13}), 10, 3), None);
+    }
+
+    #[test]
+    fn one_missed_reply_is_noise_but_a_run_of_them_is_a_wedged_mpv() {
+        let mut health = Health::default();
+        assert_eq!(health.stalled(), None, "a fresh client is not wedged");
+        // A property that is momentarily unavailable across a track change must not put
+        // a warning in the status bar, or it cries wolf at every transition.
+        for miss in 1..Health::ENOUGH {
+            health.missed("timed out".to_string());
+            assert_eq!(health.stalled(), None, "warned after only {miss} misses");
+        }
+        health.missed("timed out".to_string());
+        assert_eq!(
+            health.stalled(),
+            Some("timed out"),
+            "never warned, even wedged"
+        );
+        // Any answer at all clears it: a player that recovers stops apologising.
+        health.answered();
+        assert_eq!(health.stalled(), None);
+        // A miss with no message still reports something a user can read.
+        for _ in 0..Health::ENOUGH {
+            health.missed(String::new());
+        }
+        assert_eq!(health.stalled(), Some(""));
     }
 
     #[test]

@@ -1,0 +1,25 @@
+# Slam - hold both, then throw the new one in on the beat.
+#
+# For genres where a fade is simply wrong. The only preparation is a lift on the arriving
+# track's top end so it cuts through the moment it appears.
+
+name    Slam
+note    no fade at all - the new one simply arrives, on the beat
+align   beat
+tempo   free
+power   free
+
+lane out gain
+    at 0.0    1.0    hold
+    at 0.5    0.0    hold
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    hold
+    at 0.5    1.0    hold
+    at 1.0    1.0    hold
+
+lane in high
+    at 0.0      6    hold
+    at 0.5      6    smooth
+    at 1.0      0    hold

@@ -1,0 +1,35 @@
+# Tempo ride - the new track arrives at the old one's speed and accelerates into its own.
+#
+# Where sync-blend hides the change, this one uses it. The old track is gone by the quarter
+# mark, so the whole rest of the move is the new one alone, climbing from a borrowed tempo
+# to the one it was made at. On records that are close in speed it reads as a lift; on ones
+# that are far apart the player refuses to stretch at all and this is simply a fast fade.
+
+name    Tempo ride
+note    arrives at the old tempo and climbs into its own
+bars    16
+align   beat
+power   free
+
+lane out gain
+    bar 0     1.0    power-down
+    bar 4     0.0    hold
+    bar 16    0.0    hold
+
+lane in gain
+    bar 0     0.0    power-up
+    bar 4     1.0    hold
+    bar 16    1.0    hold
+
+# The climb is the point, so it is long and even rather than hidden.
+lane in tempo
+    bar 0     0.0    hold
+    bar 4     0.0    linear
+    bar 16    1.0    hold
+
+# It opens up as it speeds up.
+lane in lowpass
+    bar 0    4000    smooth
+    bar 10  16000    smooth
+    bar 12      0    hold
+    bar 16      0    hold

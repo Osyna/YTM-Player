@@ -82,11 +82,49 @@ pub fn kind_of(url: &str) -> SourceKind {
 
 pub fn is_playlist(url: &str) -> bool {
     // YouTube marks playlists with `list=`. SoundCloud collects playlists under `/sets/`,
-    // and its radio under `/stations/` or a track's `/recommended` page.
+    // and its radio under `/stations/` or a track's `/recommended` page. A multi-hit
+    // search is a playlist too - that is the whole point of resolving it as one.
     url.contains("list=")
         || url.contains("/sets/")
         || url.contains("/stations/")
         || url.contains("/recommended")
+        || is_multi_search(url)
+}
+
+/// How many results a typed search asks for. Enough to choose from in the queue pane,
+/// few enough that resolving them is one quick yt-dlp call.
+const SEARCH_HITS: usize = 12;
+
+/// A `ytsearchN:` query for more than one hit.
+fn is_multi_search(url: &str) -> bool {
+    url.strip_prefix("ytsearch")
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(count, _)| count.parse::<usize>().unwrap_or(1) > 1)
+}
+
+/// Turn whatever the user typed into something resolvable.
+///
+/// A link or a path is passed through untouched; anything else becomes a YouTube search.
+/// `ytsearchN:` makes yt-dlp return the hits in exactly the shape a playlist has, so
+/// nothing downstream - resolution, the queue pane, the crossfade decks - needs to know
+/// that searching exists at all: the first hit starts playing and the rest are sitting in
+/// the queue to click.
+pub fn as_target(text: &str) -> String {
+    let text = text.trim();
+    let looks_addressable = text.is_empty()
+        || text.contains("://")
+        || text.starts_with("www.")
+        || text.starts_with('/')
+        || text.starts_with("./")
+        || text.starts_with("../")
+        || text.starts_with('~')
+        || text.starts_with("yt")
+        || Path::new(text).exists();
+    if looks_addressable {
+        text.to_string()
+    } else {
+        format!("ytsearch{SEARCH_HITS}:{text}")
+    }
 }
 
 /// A clipboard payload worth queueing: one plain http(s) link to a provider we play.
@@ -144,6 +182,12 @@ pub struct Entry {
     /// False while `title` is a stand-in (a URL slug, a raw URL) rather than real
     /// metadata - the background title resolver targets exactly these.
     pub titled: bool,
+    /// The resolver tried for a real title and could not get one.
+    ///
+    /// Distinct from `!titled`, which only says the title showing is a stand-in. An entry
+    /// can be perfectly playable with a stand-in name, and one that will never be named is
+    /// not the same as one that has not been named yet.
+    pub title_failed: bool,
 }
 
 /// Resolve a playlist URL into titled entries, in playlist order.
@@ -169,6 +213,7 @@ pub fn fetch_playlist_entries(url: &str) -> Result<Vec<Entry>, String> {
             title: real_title.unwrap_or_else(|| slug_title(&page_url)),
             url: Some(page_url),
             titled,
+            title_failed: false,
         });
     }
     Ok(entries)
@@ -416,6 +461,7 @@ fn local_entries(path: &Path) -> Result<Option<Vec<Entry>>, String> {
                     title: file_title(p),
                     url: Some(p.display().to_string()),
                     titled: true,
+                    title_failed: false,
                 })
                 .collect(),
         ));
@@ -513,6 +559,7 @@ fn parse_playlist_text(text: &str, is_pls: bool, dir: &Path) -> Vec<Entry> {
                 url: Some(target.to_string()),
                 // A bare URL is not a title; the background resolver fetches one.
                 titled: false,
+                title_failed: false,
             });
         } else {
             let path = dir.join(target);
@@ -520,6 +567,7 @@ fn parse_playlist_text(text: &str, is_pls: bool, dir: &Path) -> Vec<Entry> {
                 title: file_title(&path),
                 url: Some(path.display().to_string()),
                 titled: true,
+                title_failed: false,
             });
         }
     }
@@ -566,6 +614,7 @@ fn resolve_spotify(
             title: t.title.clone(),
             url: None,
             titled: true,
+            title_failed: false,
         })
         .collect();
 
@@ -697,6 +746,7 @@ pub fn resolve_for_queue(url: &str) -> Result<Vec<Entry>, String> {
                     title: file_title(&path),
                     url: Some(path.display().to_string()),
                     titled: true,
+                    title_failed: false,
                 }]),
             }
         }
@@ -722,6 +772,7 @@ pub fn resolve_for_queue(url: &str) -> Result<Vec<Entry>, String> {
                         title: t.title,
                         url: Some(url),
                         titled: true,
+                        title_failed: false,
                     })
                 })
                 .collect();
@@ -753,6 +804,7 @@ pub fn resolve_for_queue(url: &str) -> Result<Vec<Entry>, String> {
                 title: title.to_string(),
                 url: Some(page.to_string()),
                 titled: true,
+                title_failed: false,
             }])
         }
     }
@@ -764,7 +816,93 @@ pub struct TitleEvent {
     /// The entry URL the title belongs to, so a receiver whose indexes have shifted
     /// (an add-next insert) can still match the right entry.
     pub url: String,
-    pub title: String,
+    /// The real title, or `None` when the resolver tried everything and got nothing.
+    ///
+    /// Saying so matters. Without it an entry that will never have a title looks exactly
+    /// like one still being fetched - a raw numeric id and a row of dots, sitting there
+    /// for the rest of the session as though something were still happening.
+    pub title: Option<String>,
+}
+
+/// What resolving a page URL to something ffmpeg can open came to.
+pub enum MediaUrl {
+    /// A direct stream URL; ffmpeg opens these (HLS playlists included). The thumbnail
+    /// comes free in the same process and round trip - a plain image URL ffmpeg can also
+    /// open directly, so the cover box works for streams instead of only local files.
+    Direct {
+        url: String,
+        thumbnail: Option<String>,
+    },
+    /// The provider refused outright - DRM, region, taken down. Not a network problem:
+    /// asking again will not help, and whoever asked can treat the track as gone.
+    Refused,
+    /// yt-dlp failed in a way that might be the network's fault. Worth one more try.
+    Failed,
+}
+
+/// Resolve a streaming page URL to a URL ffmpeg can actually open, and whatever else the
+/// same process finds out about it for free.
+///
+/// mpv never needs the stream URL because it carries its own `ytdl_hook` and resolves pages
+/// as it loads them - which is precisely why handing the player's URLs to ffmpeg fails:
+/// ffmpeg has no such hook, and a SoundCloud page is HTML however hopefully it is opened.
+/// The analysis pipeline therefore does here, once per track and off the interface thread,
+/// what mpv does at load time - and one `--print` per field beats one process per field,
+/// the same trade `resolve_track` already makes for video mode.
+pub fn stream_media_url(page: &str) -> MediaUrl {
+    let out = Command::new("yt-dlp")
+        .args([
+            "-f",
+            "bestaudio/best",
+            "--no-playlist",
+            "--no-warnings",
+            "--print",
+            "%(url)s",
+            "--print",
+            "%(thumbnail)s",
+            page,
+        ])
+        .stdin(Stdio::null())
+        .output();
+    let Ok(out) = out else {
+        return MediaUrl::Failed;
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut lines = stdout.lines().map(str::trim);
+    if let Some(url) = lines.next().filter(|l| l.starts_with("http")) {
+        let thumbnail = lines
+            .next()
+            .filter(|t| !t.is_empty() && *t != "NA")
+            .map(str::to_string);
+        return MediaUrl::Direct {
+            url: url.to_string(),
+            thumbnail,
+        };
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // A definitive refusal is not a failure to be retried; it is an answer. The DRM one
+    // matters most: those tracks are unplayable for mpv too, so whoever asked can skip
+    // the entry instead of cueing a transition into a track that will never load.
+    if stderr.contains("DRM protected")
+        || stderr.contains("not available")
+        || stderr.contains("Private video")
+    {
+        return MediaUrl::Refused;
+    }
+    MediaUrl::Failed
+}
+
+/// Whether a target needs [`stream_media_url`] before ffmpeg can open it.
+///
+/// True for the page hosts the player accepts; false for local paths and for direct CDN
+/// URLs, which ffmpeg opens as they are. `api-v2.soundcloud.com` entries - what a
+/// SoundCloud set flattens to - contain the host name and are caught by the same test.
+pub fn needs_media_resolution(target: &str) -> bool {
+    target.contains("://")
+        && (target.contains("soundcloud.com")
+            || target.contains("youtube.com")
+            || target.contains("youtu.be")
+            || target.contains("open.spotify.com"))
 }
 
 /// Fetch real titles for entries whose display name is a stand-in (URL slugs, numeric
@@ -825,6 +963,21 @@ pub fn spawn_title_resolver(items: Vec<(usize, String)>) -> Receiver<TitleEvent>
                     }
                 }
             }
+
+            // Anything still waiting has now had a batch and a go on its own, so it is not
+            // slow, it is gone. Report that rather than leaving the row to imply progress.
+            for (url, queue) in &mut waiting {
+                for index in queue.drain(..) {
+                    let event = TitleEvent {
+                        index,
+                        url: (*url).to_string(),
+                        title: None,
+                    };
+                    if tx.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
         }
     });
     rx
@@ -846,7 +999,7 @@ fn take_titles(stdout: &str, waiting: &mut HashMap<&str, VecDeque<usize>>) -> Ve
             events.push(TitleEvent {
                 index,
                 url: url.to_string(),
-                title: title.to_string(),
+                title: Some(title.to_string()),
             });
         }
     }
@@ -970,6 +1123,28 @@ impl DownloadSpec {
                 height: settings.quality.height(),
             }
         }
+    }
+
+    /// Metadata args: title, artist and album written into the file, plus the video
+    /// thumbnail embedded as cover art. Both are post-processing, so both need ffmpeg -
+    /// without it a saved file is still a correct file, just an untagged one.
+    ///
+    /// `%(artist,uploader)s` is yt-dlp's fallback syntax: real music uploads carry an
+    /// `artist` field, everything else has to make do with the channel name.
+    fn metadata_args(has_ffmpeg: bool) -> Vec<String> {
+        if !has_ffmpeg {
+            return Vec::new();
+        }
+        [
+            "--embed-metadata",
+            "--embed-thumbnail",
+            "--parse-metadata",
+            "%(artist,uploader)s:%(meta_artist)s",
+            "--parse-metadata",
+            "%(album,playlist_title,title)s:%(meta_album)s",
+        ]
+        .map(String::from)
+        .to_vec()
     }
 
     /// yt-dlp format-selection args, including the fallbacks for when ffmpeg is missing:
@@ -1137,7 +1312,7 @@ impl DownloadControl {
     /// Download `url` as `spec` into `downloads/` in the background. The terminal state
     /// (`Done`/`Failed`/`Cancelled`) stays until the caller acknowledges it - display timing
     /// belongs to the UI, and the playlist queue needs to read outcomes reliably.
-    pub fn start(&self, url: String, spec: DownloadSpec) {
+    pub fn start(&self, url: String, spec: DownloadSpec, tag: bool) {
         self.cancel_requested.store(false, Ordering::SeqCst);
         *self.state.lock() = DownloadState::Running { percent: 0.0 };
         let state = self.state.clone();
@@ -1152,8 +1327,14 @@ impl DownloadControl {
                 return;
             }
 
+            let ffmpeg = has_ffmpeg();
             let mut cmd = Command::new("yt-dlp");
-            cmd.args(spec.ytdlp_args(has_ffmpeg()))
+            cmd.args(spec.ytdlp_args(ffmpeg))
+                .args(if tag {
+                    DownloadSpec::metadata_args(ffmpeg)
+                } else {
+                    Vec::new()
+                })
                 // A few parallel fragment connections noticeably speed up DASH downloads.
                 .args(["--concurrent-fragments", "4", "--newline"])
                 .args(["-o", "downloads/%(title)s.%(ext)s", &url])
@@ -1316,8 +1497,10 @@ mod tests {
         // Out of order, with a junk line and an "NA" title in the middle.
         let out = "c\u{1f}Third\nnot a pair\nb\u{1f}NA\na\u{1f}First\n";
         let events = take_titles(out, &mut waiting);
-        let mut got: Vec<(usize, String)> =
-            events.into_iter().map(|e| (e.index, e.title)).collect();
+        let mut got: Vec<(usize, String)> = events
+            .into_iter()
+            .filter_map(|e| e.title.map(|title| (e.index, title)))
+            .collect();
         got.sort();
         assert_eq!(
             got,

@@ -1,0 +1,43 @@
+# Gate out - the leaving track chopped away on eighths.
+#
+# A gate is a square wave on the fader, and writing one by hand was thirty-two keyframes
+# nobody could read. `every` writes it in a line, which is the only reason this file is
+# short enough to be worth having.
+#
+# Eighths rather than sixteenths on purpose. The whole score is stepped at the redraw
+# rate - fifty milliseconds while a beat-aligned transition runs - so an eighth of a bar
+# at 128 BPM is about five steps of the loop and reads as a gate, where a sixteenth is
+# two and reads as a stutter with a limp. That is the ceiling of what a *lane* can chop;
+# past it the move belongs to `loop`, which is playback and not a control.
+
+name    Gate out
+note    the leaving track chopped away on eighths
+bars    4
+align   beat
+tempo   match
+power   free
+
+lane out gain
+    bar 0    1.0    hold
+    every 1/8 from bar 1 to bar 3   1.0 0.0   hold
+    bar 3    0.0    hold
+    bar 4    0.0    hold
+
+# Opening from a whisper underneath the gate, so the holes in it are filled by the new
+# track rather than by silence.
+lane in gain
+    bar 0    0.0    smooth
+    bar 3    1.0    hold
+    bar 4    1.0    hold
+
+lane in highpass
+    bar 0    400    smooth
+    bar 3      0    hold
+    bar 4      0    hold
+
+lane in tempo
+    bar 0    0.0    hold
+    bar 3    0.0    smooth
+    bar 4    1.0    hold
+
+hook bar 1    toast ░ gate
