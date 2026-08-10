@@ -1,0 +1,43 @@
+# Crossfade - the plainest thing two decks can do.
+#
+# Every file in this folder is a transition. Copy one, change it, and the player picks it
+# up next time it starts - no rebuild. Yours live in ~/.config/ytmplayer/transitions and
+# override a built-in one of the same name.
+#
+# The fade length in settings is the span of the WHOLE move. Where the join falls inside it
+# is decided here, by where the leaving track's fader reaches zero: at 0.5, so fifteen
+# seconds is seven and a half either side of the end of the old track. The arriving track
+# goes on opening up through the second half, which is what a hand would be doing.
+
+name    Crossfade
+note    equal-power fade, the join in the middle
+align   free
+tempo   free
+power   free
+
+# lane <deck> <control>, then one line per keyframe: <when> <value> <ease>
+#   decks     out (the track leaving) | in (the track arriving)
+#   controls  gain bass mid high lowpass highpass speed tempo
+#   when      bar <n> | at <0..1>
+#   ease      hold linear smooth power-down power-up
+#
+# power-down and power-up are a pair. Two overlapping tracks are uncorrelated, so their
+# powers add, and this pair is what holds out^2 + in^2 at exactly one.
+
+lane out gain
+    at 0.0    1.0    power-down
+    at 0.5    0.0    hold
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 0.5    1.0    hold
+    at 1.0    1.0    hold
+
+# The arriving track comes in with its bottom trimmed and opens out once it is alone, so
+# the second half of the span is a recovery rather than padding.
+lane in highpass
+    at 0.0    220    smooth
+    at 0.5    120    smooth
+    at 0.85     0    hold
+    at 1.0      0    hold

@@ -1,0 +1,21 @@
+# Radio fade - short, linear, and over before anyone notices.
+#
+# What a broadcast desk does between records: no EQ, no beat, no ceremony. Deliberately
+# linear rather than equal-power, because on speech and on records that do not overlap
+# well the constant-power curve holds both up too long and they collide in the middle.
+
+name    Radio fade
+note    a short, plain fade - what a broadcast desk does
+align   free
+tempo   free
+power   free
+
+lane out gain
+    at 0.0    1.0    linear
+    at 0.5    0.0    hold
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    linear
+    at 0.5    1.0    hold
+    at 1.0    1.0    hold

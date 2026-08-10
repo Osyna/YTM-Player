@@ -1,0 +1,67 @@
+# Long blend - sixteen bars, tempo-locked, ending on a bass drop.
+#
+# Both tracks run together from the first bar. The arriving one is silent but already
+# playing, with its low end killed and its middle pulled back, so that when it is faded up
+# there is room for it - the whole trick is that the two never occupy the same part of the
+# spectrum at once.
+#
+#   bars 0-4    the low end comes out of the leaving track
+#   bars 4-8    its top goes too, while the arriving one comes up and its middle returns
+#   bars 8-12   what is left of it is swept out under a lowpass and its fader comes down
+#   bars 12-16  the new track alone, still with no bass at all
+#   bar 16      its low end arrives in one step
+#
+# Written in bars because that is what it is: "wait four and drop" is a count. Sixteen bars
+# is thirty seconds at 128 BPM and twenty-two at 174.
+
+name    Long blend
+note    16 bars, tempo-locked, ending on a bass drop
+bars    16
+align   beat
+tempo   match
+power   free
+
+lane out gain
+    bar 0     1.0    hold
+    bar 8     1.0    smooth
+    bar 12    0.0    hold
+    bar 16    0.0    hold
+
+lane out bass
+    bar 0       0    smooth
+    bar 4     -40    hold
+    bar 16    -40    hold
+
+lane out high
+    bar 4       0    smooth
+    bar 8     -40    hold
+    bar 16    -40    hold
+
+lane out lowpass
+    bar 8   16000    smooth
+    bar 12    250    hold
+    bar 16    250    hold
+
+lane in gain
+    bar 0     0.0    hold
+    bar 4     0.0    smooth
+    bar 8     1.0    hold
+    bar 16    1.0    hold
+
+lane in mid
+    bar 0     -10    hold
+    bar 4     -10    smooth
+    bar 8       0    hold
+    bar 16      0    hold
+
+# No low end at all until the drop. A hold and a jump, never a fade.
+lane in bass
+    bar 0     -40    hold
+    bar 16      0    hold
+
+# 0 is locked to the leaving track's tempo, 1 is this track's own. Locked while both are
+# audible, then let back once it is alone, so the drop lands at the speed it was made at.
+lane in tempo
+    bar 0     0.0    hold
+    bar 12    0.0    smooth
+    bar 16    1.0    hold

@@ -1,0 +1,17 @@
+# Cut on beat - no overlap at all. For genres where a fade is simply wrong.
+
+name    Cut on beat
+note    no overlap - a straight swap on the bar line
+align   beat
+tempo   free
+power   constant
+
+lane out gain
+    at 0.0    1.0    hold
+    at 0.5    0.0    hold
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    hold
+    at 0.5    1.0    hold
+    at 1.0    1.0    hold

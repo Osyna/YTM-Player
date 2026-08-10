@@ -1,0 +1,31 @@
+# Vocal swap - trade the middles, so two voices never talk over each other.
+#
+# The bass and the top are crossed over slowly and the midrange - where a voice lives - is
+# handed across quickly and late. On tracks with singing this is the difference between a
+# mix and a mess.
+
+name    Vocal swap
+note    hands the midrange across late, so two voices never collide
+align   beat
+tempo   free
+power   constant
+
+lane out gain
+    at 0.0    1.0    power-down
+    at 1.0    0.0    hold
+
+lane in gain
+    at 0.0    0.0    power-up
+    at 1.0    1.0    hold
+
+lane out mid
+    at 0.0      0    smooth
+    at 0.45     0    smooth
+    at 0.6    -24    hold
+    at 1.0    -24    hold
+
+lane in mid
+    at 0.0    -24    smooth
+    at 0.45   -24    smooth
+    at 0.6      0    hold
+    at 1.0      0    hold

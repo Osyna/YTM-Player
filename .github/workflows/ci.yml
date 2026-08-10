@@ -18,14 +18,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The integration tests drive the real program, which drives these. Without them
+      # every one of those tests skips itself and the suite goes green having checked
+      # nothing that needs a process.
+      - name: Install the programs the player drives
+        run: sudo apt-get update && sudo apt-get install -y mpv ffmpeg
+
       - name: Check formatting
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
 
+      # Unit tests are instant.
       - name: Run tests
-        run: cargo test --release
+        run: cargo test --release --bins
+
+      # Split by whether an assertion cares about wall-clock time. The functional half
+      # (settings, queue, covers, fault handling) tolerates several mpv processes at
+      # once and runs with cargo's default parallelism; a crossfade or a beat sync does
+      # not, and MPRIS claims one D-Bus name shared by every instance the suite spawns,
+      # so both stay in the single-threaded run.
+      - name: Run the functional live tests
+        run: cargo test --release --test live_functional
+
+      - name: Run the timing-sensitive live tests
+        run: cargo test --release --test live -- --test-threads=1
 
       - name: Build release binary
         run: cargo build --release

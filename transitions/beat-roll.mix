@@ -1,0 +1,50 @@
+# Beat roll - the last bar retriggered at halving intervals, into the swap.
+#
+# The move every big-room set is built on, and the one thing this language could not say
+# until `loop` existed: the leaving track's last beat caught and repeated, tighter and
+# tighter, until it is a tone rather than a beat - and then it is gone and the new track
+# is there.
+#
+# It is hooks rather than lanes because it is not a control moving. Nothing on a mixer
+# does this; playback itself jumps backwards, which is `ab-loop` on the deck and nothing
+# else. The fader underneath carries on exactly as it would have.
+
+name    Beat roll
+note    the last bar rolled into the swap
+bars    8
+align   beat
+tempo   match
+power   free
+
+lane out gain
+    bar 0    1.0    hold
+    bar 6    1.0    smooth
+    bar 7    0.0    hold
+    bar 8    0.0    hold
+
+# The arriving track builds underneath from half way, with no bottom of its own until the
+# swap - so the roll is the only thing with any weight when it lands.
+lane in gain
+    bar 0    0.0    hold
+    bar 4    0.0    power-up
+    bar 7    1.0    hold
+    bar 8    1.0    hold
+
+lane in bass
+    bar 0    -40    hold
+    bar 7      0    hold
+    bar 8      0    hold
+
+lane in tempo
+    bar 0    0.0    hold
+    bar 7    0.0    smooth
+    bar 8    1.0    hold
+
+# Halving: half a bar, then a quarter, then an eighth - each one caught from wherever the
+# playhead is by then, which is already inside the last one. `loop off` is not optional
+# and not decoration: it is what hands the deck back.
+hook bar 6      loop out 1/2
+hook bar 6.5    loop out 1/4
+hook bar 6.75   loop out 1/8
+hook bar 7      loop off
+hook bar 6      toast ⟲ rolling

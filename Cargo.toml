@@ -4,13 +4,23 @@ version = "3.0.0"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Osyna/YTM-Player"
-description = "Terminal YouTube player: audio in a text UI, true-colour ASCII video on demand, background downloads"
+description = "Terminal music player for YouTube, SoundCloud, Spotify and local files: a fully clickable hacker TUI with native audio scopes, true-colour ASCII video, a play queue and playlist downloads"
 
 [dependencies]
 crossterm = "0.29.0"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 parking_lot = "0.12.5"
+ratatui = "0.30.2"
 serde_json = "1.0.151"
+# Already in the tree through ratatui; used directly so button/status geometry counts
+# display cells, not chars (⚡ and friends are two cells wide).
+unicode-width = "0.2"
+
+# Tests only - none of this reaches the binary or the packages, which is the whole reason
+# it is allowed to exist. The integration tests drive the real program through a real
+# pseudo-terminal, and opening one is a `libc` call with no std equivalent.
+[dev-dependencies]
+libc = "0.2"
 
 [profile.release]
 # A single codegen unit plus cross-crate inlining: the binary is small enough that the extra
@@ -18,6 +28,13 @@ serde_json = "1.0.151"
 lto = true
 codegen-units = 1
 strip = true
+# No unwind tables: a panic here is already always fatal (nothing catches one), so the
+# tables exist only to be dead weight in every function that could call one that could
+# unwind. Test binaries still build and run - `cargo test` does not use this profile
+# unless asked to with `--release`, and this repo's CI does exactly that; a genuine
+# panic during a release-mode test run aborts the whole binary instead of failing one
+# test cleanly, which is the same trade-off the shipped binary makes.
+panic = "abort"
 
 # Packaging. Release builds target musl and link statically, so the packages declare no library
 # dependencies at all - only the two programs the player actually shells out to.
@@ -29,7 +46,9 @@ license-file = "LICENSE"
 section = "sound"
 priority = "optional"
 depends = "mpv, yt-dlp"
-recommends = "ffmpeg"
+# ffmpeg merges separate video/audio streams; curl reads Spotify's public embed page.
+# Both are optional: without them those two features report why, and nothing else changes.
+recommends = "ffmpeg, curl"
 extended-description = """\
 Plays YouTube audio in a small text UI with a live progress bar, and renders the video as \
 true-colour ASCII in the same terminal on a keypress, without interrupting playback. Tracks \
@@ -38,6 +57,11 @@ assets = [
     ["target/release/ytmplayer", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/ytmplayer/README.md", "644"],
     ["CHANGELOG.md", "usr/share/doc/ytmplayer/CHANGELOG.md", "644"],
+    ["docs/WRITING-TRANSITIONS.md", "usr/share/doc/ytmplayer/WRITING-TRANSITIONS.md", "644"],
+    # The transitions are embedded in the binary, so these are not needed to run - they are
+    # here to be copied into ~/.config/ytmplayer/transitions and edited, which is the whole
+    # point of them being text.
+    ["transitions/*.mix", "usr/share/ytmplayer/transitions/", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -46,9 +70,12 @@ summary = "Terminal YouTube player with true-colour ASCII video"
 # invents a glibc dynamic-loader requirement the package does not have.
 auto-req = "no"
 requires = { mpv = "*", yt-dlp = "*" }
+recommends = { ffmpeg = "*", curl = "*" }
 assets = [
     { source = "target/release/ytmplayer", dest = "/usr/bin/ytmplayer", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/ytmplayer/README.md", mode = "644", doc = true },
+    { source = "docs/WRITING-TRANSITIONS.md", dest = "/usr/share/doc/ytmplayer/WRITING-TRANSITIONS.md", mode = "644", doc = true },
+    { source = "transitions/*.mix", dest = "/usr/share/ytmplayer/transitions/", mode = "644" },
     { source = "CHANGELOG.md", dest = "/usr/share/doc/ytmplayer/CHANGELOG.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/ytmplayer/LICENSE", mode = "644", doc = true },
 ]
