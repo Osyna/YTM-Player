@@ -34,8 +34,21 @@ jobs:
       # anything audible. Not app config - a real user's PulseAudio/PipeWire/ALSA setup
       # is exactly what the player should keep deferring to, so this stays on the CI
       # side rather than hardcoding an --ao= the app would then carry into real use.
+      #
+      # `ALSA_CONFIG_PATH`, not `~/.asoundrc`: every test spawns the player with its own
+      # scratch `HOME` (so tests do not collide on `~/.config/ytmplayer`), which also
+      # hides a `~/.asoundrc` written here from every process the suite actually runs.
+      # An env var has no such blind spot - `$GITHUB_ENV` carries it to every later step
+      # and a test's `HOME` override does not touch it. `XDG_RUNTIME_DIR` alongside it
+      # for the same reason: unset, some of mpv's audio probing is slower to fail past,
+      # which on a loaded runner was long enough to matter.
       - name: Give ALSA a device to open (CI has no sound card)
-        run: printf 'pcm.!default { type null }\nctl.!default { type null }\n' > ~/.asoundrc
+        run: |
+          printf 'pcm.!default { type null }\nctl.!default { type null }\n' > "$RUNNER_TEMP/alsa-null.conf"
+          echo "ALSA_CONFIG_PATH=$RUNNER_TEMP/alsa-null.conf" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all --check
