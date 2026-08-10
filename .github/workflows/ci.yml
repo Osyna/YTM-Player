@@ -21,8 +21,21 @@ jobs:
       # The integration tests drive the real program, which drives these. Without them
       # every one of those tests skips itself and the suite goes green having checked
       # nothing that needs a process.
+      # dbus-user-session provides `dbus-run-session`, used below to give MPRIS a bus
+      # to register on - ubuntu-latest has none running by default.
       - name: Install the programs the player drives
-        run: sudo apt-get update && sudo apt-get install -y mpv ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y mpv ffmpeg dbus-user-session
+
+      # ubuntu-latest has no sound card and no PulseAudio/PipeWire daemon running, so
+      # mpv's audio init has nothing to open ("Unknown PCM default file or directory")
+      # and every live test that plays a track fails with it - not because anything
+      # regressed, but because mpv never gets past its own startup. A null ALSA device
+      # is enough: mpv only needs to succeed *opening* output here, never produce
+      # anything audible. Not app config - a real user's PulseAudio/PipeWire/ALSA setup
+      # is exactly what the player should keep deferring to, so this stays on the CI
+      # side rather than hardcoding an --ao= the app would then carry into real use.
+      - name: Give ALSA a device to open (CI has no sound card)
+        run: printf 'pcm.!default { type null }\nctl.!default { type null }\n' > ~/.asoundrc
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -39,11 +52,18 @@ jobs:
       # once and runs with cargo's default parallelism; a crossfade or a beat sync does
       # not, and MPRIS claims one D-Bus name shared by every instance the suite spawns,
       # so both stay in the single-threaded run.
+      #
+      # Both run under `dbus-run-session`: ubuntu-latest has no session bus either, and
+      # MPRIS registration reaching for one that was never going to answer was blocking
+      # the player's own startup long enough to blow the test harness's connect timeout
+      # - the picture and the queue tests were failing on a closed IPC socket, nothing
+      # to do with pictures or queues. `dbus-run-session` starts a private bus, runs the
+      # command against it, and tears it down after - the same fix either step needs.
       - name: Run the functional live tests
-        run: cargo test --release --test live_functional
+        run: dbus-run-session -- cargo test --release --test live_functional
 
       - name: Run the timing-sensitive live tests
-        run: cargo test --release --test live -- --test-threads=1
+        run: dbus-run-session -- cargo test --release --test live -- --test-threads=1
 
       - name: Build release binary
         run: cargo build --release
