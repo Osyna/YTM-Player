@@ -525,6 +525,14 @@ struct Player {
     /// Streaming resolver for entries that started life unresolved (Spotify smart loading).
     resolver: Option<Receiver<ResolveEvent>>,
     resolver_done: bool,
+    /// Set the first time mpv is seen to actually be playing something. Right after
+    /// spawn, `--idle=yes` mpv reports idle for a beat while it is still opening the
+    /// very first track - on anything slower than an idle desktop (a loaded CI runner,
+    /// say) the auto-exit check below can run before that beat is over. Gating it on
+    /// this instead of on idle alone is the difference between "the queue ran out" and
+    /// "the queue never started": without it, a URL session can quit itself before a
+    /// single frame of the first track ever played.
+    left_idle: bool,
     /// Entries with a known URL, for the "matching m/n" progress line.
     resolved_count: usize,
     /// Entries whose resolution finished with no match - they will never play.
@@ -812,6 +820,7 @@ impl Player {
             download_target: None,
             resolver_done: resolver.is_none(),
             resolver,
+            left_idle: false,
             resolved_count,
             missing: vec![false; entry_count],
             playlist_map,
@@ -947,12 +956,22 @@ impl Player {
                 self.dirty = false;
                 // A URL session ends when the playlist truly runs out. Interactive
                 // sessions (bare launch, anything opened from inside) stay for more.
+                //
+                // `idle_active` alone is not enough: right after spawn it reads true
+                // for a beat while mpv is still opening the first track, and reading
+                // that as "ran out" before `left_idle` is required would end the
+                // session on a race instead of a finished queue - never audible on a
+                // fast idle desktop, reliable enough to fail the first track under CI
+                // load that it was worth a field to close for good.
+                let idle_now = self.mpv.idle_active();
+                self.left_idle |= !idle_now;
                 if self.auto_exit
+                    && self.left_idle
                     && self.resolver_done
                     && !self.batch_active
                     && self.opens.is_none()
                     && self.input.is_none()
-                    && self.mpv.idle_active()
+                    && idle_now
                 {
                     // The queue ran out rather than being left: there is nothing to
                     // come back to, so do not offer to.
