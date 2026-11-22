@@ -1,6 +1,6 @@
 [package]
 name = "ytmplayer"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Osyna/YTM-Player"
@@ -37,7 +37,7 @@ strip = true
 panic = "abort"
 
 # Packaging. Release builds target musl and link statically, so the packages declare no library
-# dependencies at all - only the two programs the player actually shells out to.
+# dependencies at all - only the programs the player actually shells out to.
 [package.metadata.deb]
 maintainer = "Irvin <7606712+Osyna@users.noreply.github.com>"
 copyright = "Copyright Irvin \"Osyna\" (https://github.com/Osyna/YTM-Player)"
@@ -45,16 +45,20 @@ copyright = "Copyright Irvin \"Osyna\" (https://github.com/Osyna/YTM-Player)"
 license-file = "LICENSE"
 section = "sound"
 priority = "optional"
-depends = "mpv, yt-dlp"
-# ffmpeg merges separate video/audio streams; curl reads Spotify's public embed page.
-# Both are optional: without them those two features report why, and nothing else changes.
-recommends = "ffmpeg, curl"
+# curl is how the player fetches and updates its own yt-dlp (and reads Spotify's public embed
+# page), which is why yt-dlp itself is only recommended: the distribution's copy is used while
+# it is current, and a package manager without one must not be able to refuse the install.
+depends = "mpv, curl"
+# ffmpeg saves tracks, reads covers and tags, and measures tempo for beat mixing. Without it
+# those features say why, and nothing else changes.
+recommends = "yt-dlp, ffmpeg"
 extended-description = """\
 Plays YouTube audio in a small text UI with a live progress bar, and renders the video as \
 true-colour ASCII in the same terminal on a keypress, without interrupting playback. Tracks \
 can be saved to disk in the background. Drives mpv and yt-dlp over their native interfaces."""
 assets = [
     ["target/release/ytmplayer", "usr/bin/", "755"],
+    ["docs/ytmplayer.1", "usr/share/man/man1/ytmplayer.1", "644"],
     ["README.md", "usr/share/doc/ytmplayer/README.md", "644"],
     ["CHANGELOG.md", "usr/share/doc/ytmplayer/CHANGELOG.md", "644"],
     ["docs/WRITING-TRANSITIONS.md", "usr/share/doc/ytmplayer/WRITING-TRANSITIONS.md", "644"],
@@ -69,10 +73,11 @@ summary = "Terminal YouTube player with true-colour ASCII video"
 # The binary is statically linked, so rpm's ELF scan has nothing true to say: left on, it
 # invents a glibc dynamic-loader requirement the package does not have.
 auto-req = "no"
-requires = { mpv = "*", yt-dlp = "*" }
-recommends = { ffmpeg = "*", curl = "*" }
+requires = { mpv = "*", curl = "*" }
+recommends = { yt-dlp = "*", ffmpeg = "*" }
 assets = [
     { source = "target/release/ytmplayer", dest = "/usr/bin/ytmplayer", mode = "755" },
+    { source = "docs/ytmplayer.1", dest = "/usr/share/man/man1/ytmplayer.1", mode = "644", doc = true },
     { source = "README.md", dest = "/usr/share/doc/ytmplayer/README.md", mode = "644", doc = true },
     { source = "docs/WRITING-TRANSITIONS.md", dest = "/usr/share/doc/ytmplayer/WRITING-TRANSITIONS.md", mode = "644", doc = true },
     { source = "transitions/*.mix", dest = "/usr/share/ytmplayer/transitions/", mode = "644" },

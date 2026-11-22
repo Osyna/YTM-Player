@@ -107,7 +107,11 @@ impl Pty {
         std::env::temp_dir().join(format!("mpvsocket_{}_b", self.child.id()))
     }
 
-    /// Read and parse output for `duration`, answering anything that needs an answer.
+    /// Read and parse output for `duration`.
+    ///
+    /// Nothing is answered, on purpose. The player used to ask the terminal where its cursor
+    /// was on every screen clear and stall two seconds when nothing replied; it no longer
+    /// asks, and a test terminal that stays silent is what fails loudly if it ever does again.
     pub fn pump(&mut self, duration: Duration) {
         let deadline = Instant::now() + duration;
         let mut buf = [0u8; 65536];
@@ -115,14 +119,7 @@ impl Pty {
             // SAFETY: reading into a local buffer from a fd this struct owns.
             let n = unsafe { libc::read(self.master, buf.as_mut_ptr().cast(), buf.len()) };
             if n > 0 {
-                let chunk = &buf[..n as usize];
-                self.screen.feed(chunk);
-                // crossterm asks the terminal where the cursor is on every `clear`, and
-                // blocks for two seconds when nothing answers. A test that does not
-                // answer measures its own timeout instead of the program.
-                if find(chunk, b"\x1b[6n") {
-                    self.send("\x1b[1;1R");
-                }
+                self.screen.feed(&buf[..n as usize]);
             } else {
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -172,10 +169,14 @@ impl Pty {
 
     /// Quit the way a user does, so the program's own shutdown runs: it is the thing
     /// that kills both decks and removes their sockets.
+    ///
+    /// Reading all the while. A program nobody reads from blocks on its own output once
+    /// the terminal's buffer is full, and one that is blocked never gets as far as exiting.
     pub fn quit(&mut self) {
         self.key("q");
-        self.pump(Duration::from_millis(500));
-        let _ = self.child.wait();
+        while matches!(self.child.try_wait(), Ok(None)) {
+            self.pump(Duration::from_millis(50));
+        }
     }
 }
 
@@ -198,16 +199,14 @@ impl Drop for Pty {
                     let _ = self.child.wait();
                     break;
                 }
-                _ => std::thread::sleep(Duration::from_millis(50)),
+                // Reading, not sleeping, for the reason `quit` does: with a picture up the
+                // player is writing megabytes a second and cannot shut down past a full pty.
+                _ => self.pump(Duration::from_millis(50)),
             }
         }
         // SAFETY: closing a fd this struct owns, exactly once.
         unsafe { libc::close(self.master) };
     }
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn open_pty(cols: u16, rows: u16) -> (RawFd, RawFd) {
@@ -254,15 +253,20 @@ fn set_nonblocking(fd: RawFd) {
 /// Enough of a terminal to assert against.
 ///
 /// The program paints with absolute cursor moves, line and screen clears, SGR runs and
-/// text - and nothing else, because it builds every frame itself rather than relying on
-/// scrolling or wrapping. So that is all this understands. Anything it does not
-/// recognise is skipped rather than printed, which is the difference between a readable
-/// assertion failure and a wall of escape codes.
+/// text, with the cursor saved and restored around the bar it draws under a picture - and
+/// nothing else, because it builds every frame itself rather than relying on scrolling or
+/// wrapping. So that is all this understands. Anything it does not recognise is skipped
+/// rather than printed, which is the difference between a readable assertion failure and a
+/// wall of escape codes.
 pub struct Screen {
     cols: u16,
     rows: u16,
     cells: Vec<char>,
     cursor: (u16, u16),
+    saved: (u16, u16),
+    /// How many times the alternate screen was left. Once, at exit, is the player's own;
+    /// any before that put the user back on their shell's screen mid-session.
+    pub alt_screen_exits: usize,
 }
 
 impl Screen {
@@ -272,6 +276,8 @@ impl Screen {
             rows,
             cells: vec![' '; cols as usize * rows as usize],
             cursor: (0, 0),
+            saved: (0, 0),
+            alt_screen_exits: 0,
         }
     }
 
@@ -305,8 +311,13 @@ impl Screen {
 
     fn escape(&mut self, chars: &mut std::iter::Peekable<std::str::Chars>) {
         if chars.peek() != Some(&'[') {
-            // Two-byte escapes and OSC: nothing this program paints with.
-            chars.next();
+            // Two-byte escapes and OSC: save and restore cursor, and nothing else this
+            // program paints with.
+            match chars.next() {
+                Some('7') => self.saved = self.cursor,
+                Some('8') => self.cursor = self.saved,
+                _ => {}
+            }
             return;
         }
         chars.next();
@@ -332,12 +343,18 @@ impl Screen {
                 let col = numbers.get(1).copied().unwrap_or(1).max(1) - 1;
                 self.cursor = (col, row);
             }
-            'J' => {
-                // 2 clears everything; the program only ever uses that one.
-                if first == 2 {
-                    self.cells.fill(' ');
+            'J' => match first {
+                2 => self.cells.fill(' '),
+                // From the top through the cursor: mpv's wipe, cut down to the picture's rows.
+                1 => {
+                    let col = self.cursor.0.min(self.cols.saturating_sub(1)) as usize;
+                    let row = self.cursor.1.min(self.rows.saturating_sub(1)) as usize;
+                    let end = (row * self.cols as usize + col + 1).min(self.cells.len());
+                    self.cells[..end].fill(' ');
                 }
-            }
+                _ => {}
+            },
+            'l' if params == "?1049" => self.alt_screen_exits += 1,
             'K' => {
                 let (col, row) = self.cursor;
                 for c in col..self.cols {
@@ -733,6 +750,28 @@ pub fn make_tagged_track(path: &Path, title: &str, artist: &str, album: &str, se
             .args(["-metadata", &format!("artist={artist}")])
             .args(["-metadata", &format!("album={album}")])
             .args(["-c:a", "libmp3lame"])
+            .arg(out)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run ffmpeg");
+        assert!(status.success(), "ffmpeg failed for {}", out.display());
+    });
+}
+
+/// A clip with a moving picture, for the one pane that needs something to show.
+pub fn make_video(path: &Path, seconds: u32) {
+    let recipe = format!("video:{seconds}");
+    cached_fixture(&recipe, path, |out| {
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc=size=320x180:rate=25:duration={seconds}"))
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!("sine=frequency=440:duration={seconds}"))
+            // Codecs every ffmpeg has, and the muxer by name: the cache hands every
+            // recipe an `.mp3` path to write to, whatever is being written.
+            .args(["-c:v", "mpeg4", "-q:v", "6", "-c:a", "libmp3lame"])
+            .args(["-f", "matroska"])
             .arg(out)
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -279,8 +279,10 @@ fn decode(target: &str, start: f64, seconds: f64) -> Option<Vec<f32>> {
     let bytes = reader.join().unwrap_or_default();
     Some(
         bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect(),
     )
 }
@@ -328,7 +330,7 @@ fn measure(pcm: &[f32], interval: f64) -> Frames {
 
     for (f, slot) in frames.rms.iter_mut().enumerate() {
         let (mut left, mut right) = (0.0, 0.0);
-        for pair in pcm[f * stride..(f + 1) * stride].chunks_exact(CHANNELS) {
+        for pair in pcm[f * stride..(f + 1) * stride].as_chunks::<CHANNELS>().0 {
             left += f64::from(pair[0]) * f64::from(pair[0]);
             right += f64::from(pair[1]) * f64::from(pair[1]);
         }
@@ -343,7 +345,7 @@ fn measure(pcm: &[f32], interval: f64) -> Frames {
         let mut right = Biquad::bandpass(f64::from(*freq), f64::from(RATE), BANDWIDTH);
         for f in 0..count {
             let mut power = 0.0;
-            for pair in pcm[f * stride..(f + 1) * stride].chunks_exact(CHANNELS) {
+            for pair in pcm[f * stride..(f + 1) * stride].as_chunks::<CHANNELS>().0 {
                 let l = left.step(f64::from(pair[0]));
                 let r = right.step(f64::from(pair[1]));
                 power += l * l + r * r;

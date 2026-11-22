@@ -22,13 +22,13 @@ use crate::tty;
 use crate::visualizer::Visualizer;
 use crate::youtube::DownloadState;
 use crossterm::Command as CtCommand;
-use crossterm::cursor::{Hide, MoveTo, Show};
+use crossterm::cursor::{Hide, MoveTo, RestorePosition, SavePosition, Show};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
 use crossterm::terminal::{
-    Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
-    disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, DisableLineWrap, EnableLineWrap, EndSynchronizedUpdate, EnterAlternateScreen,
+    LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Frame;
 use ratatui::backend::Backend;
@@ -522,14 +522,25 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = self.0.paint(restore_sequence().as_bytes());
+        restore(&self.0);
         let _ = disable_raw_mode();
     }
+}
+
+/// Hand the terminal back. mpv is shut out first: quitting with the picture up, a frame it
+/// was still writing would otherwise be painted onto the shell's screen after the alternate
+/// one is gone.
+fn restore(term: &tty::Terminal) {
+    term.close_video();
+    let _ = term.paint(restore_sequence().as_bytes());
 }
 
 /// Everything [`TerminalGuard`] undoes, as one frame.
 fn restore_sequence() -> String {
     let mut f = String::new();
+    // mpv can be stopped in the middle of a frame, which is in the middle of a synchronized
+    // update - and a terminal left in one shows nothing of what the shell prints next.
+    push(&mut f, EndSynchronizedUpdate);
     push(&mut f, DisableBracketedPaste);
     push(&mut f, DisableMouseCapture);
     push(&mut f, Show);
@@ -549,31 +560,26 @@ pub fn install_panic_hook(term: tty::Terminal) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = term.paint(restore_sequence().as_bytes());
+        restore(&term);
         previous(info);
     }));
 }
 
-/// Re-apply our terminal state after mpv's `tct` output tears itself down.
+/// Forget what is on screen, so the next frame clears the terminal and repaints all of it.
 ///
-/// Destroying the tct video output makes mpv emit `ESC[?1049l` (leave alt screen),
-/// `ESC[?1003l` (disable mouse reporting) and `ESC[?25h` (show cursor), which would
-/// otherwise silently break the UI and click handling.
-pub fn reassert_terminal(term: &tty::Terminal) -> io::Result<()> {
-    let mut f = String::new();
-    push(&mut f, EnterAlternateScreen);
-    push(&mut f, Hide);
-    push(&mut f, EnableMouseCapture);
-    push(&mut f, EnableBracketedPaste);
-    push(&mut f, DisableLineWrap);
-    term.paint(f.as_bytes())
-}
-
-pub fn clear_screen(term: &tty::Terminal) -> io::Result<()> {
-    let mut f = String::new();
-    push(&mut f, MoveTo(0, 0));
-    push(&mut f, Clear(ClearType::All));
-    term.paint(f.as_bytes())
+/// For whenever something ratatui does not know about has been drawn - the picture, the video
+/// transport bar, a cover - because it only repaints the cells it believes have changed.
+///
+/// Not `Terminal::clear`, which does the same and first asks the terminal where its cursor is:
+/// a query written around the frame, answered on the input stream, and waited on for up to two
+/// seconds with the interface frozen. A terminal that answers late or not at all (a slow link,
+/// a multiplexer, a recorder) turned every view change into a stall, and the read error that
+/// ends the wait into the end of the session. Resizing to the size it already has reaches the
+/// same clear without the question, and the clear travels inside the frame that repaints it.
+pub fn invalidate(tui: &mut Tui) {
+    if let Ok(size) = tui.size() {
+        let _ = tui.resize(Rect::new(0, 0, size.width, size.height));
+    }
 }
 
 /// Append a crossterm command's ANSI to the frame under construction.
@@ -585,24 +591,21 @@ fn push(frame: &mut String, cmd: impl CtCommand) {
 // Ratatui plumbing (text mode)
 // ---------------------------------------------------------------------------
 
-/// Buffers one ratatui frame and hands it to the shared terminal writer as a single
-/// atomic paint on flush - the same indivisibility contract the video path has.
-pub struct FrameWriter {
-    term: tty::Terminal,
-    buf: Vec<u8>,
-}
+/// Collects what ratatui writes into the shared terminal's frame under construction.
+///
+/// `flush` is deliberately not the end of a frame. Ratatui flushes whenever it clears the
+/// screen or touches the cursor - several times inside one draw - and a frame that reaches the
+/// terminal in those pieces is one it can show in pieces: the cleared screen first, what
+/// belongs on it a moment later. The frame ends when the caller commits it, cover and all.
+pub struct FrameWriter(tty::Terminal);
 
 impl io::Write for FrameWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.buf.extend_from_slice(bytes);
+        self.0.queue(bytes);
         Ok(bytes.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let frame = std::mem::take(&mut self.buf);
-        if !frame.is_empty() {
-            self.term.paint(&frame)?;
-        }
         Ok(())
     }
 }
@@ -610,10 +613,7 @@ impl io::Write for FrameWriter {
 pub type Tui = ratatui::Terminal<ratatui::backend::CrosstermBackend<FrameWriter>>;
 
 pub fn make_tui(term: tty::Terminal) -> io::Result<Tui> {
-    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(FrameWriter {
-        term,
-        buf: Vec::new(),
-    }))
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(FrameWriter(term)))
 }
 
 /// What a click lands on. `Bar` resolves to a [`Action::SeekTo`] fraction from the x
@@ -2420,7 +2420,7 @@ fn draw_open(frame: &mut Frame, state: &UiState, map: &mut ClickMap) {
 
     // Vertically centred column, comfortably narrow.
     let width = area.width.clamp(20, 72);
-    let x = area.x + (area.width - width) / 2;
+    let x = area.x + area.width.saturating_sub(width) / 2;
     let top = area.height.saturating_sub(9) / 2;
 
     let brand_a = Rect::new(x, area.y + top, width, 2);
@@ -3064,9 +3064,16 @@ pub fn video_bottom(state: &UiState) -> (String, ClickMap) {
 /// Serialize a [`Buffer`] to ANSI: per row an absolute `MoveTo` + line clear, then the
 /// cells with SGR emitted only when the style changes. Never touches a row outside the
 /// buffer's area and never clears the screen, so mpv's picture above survives intact.
+///
+/// The whole of it sits between a cursor save and restore, because mpv is in the middle of
+/// painting when it lands. mpv writes a row as one cursor move followed by cell after cell,
+/// and the pipe can hand over the gap halfway along one; without the restore - which brings
+/// the colours back with the position - the rest of that row is painted from wherever this
+/// left the cursor, which is the end of the status bar.
 fn buffer_to_ansi(buf: &Buffer) -> String {
     let area = buf.area;
     let mut out = String::new();
+    push(&mut out, SavePosition);
     for y in area.y..area.y + area.height {
         push(&mut out, MoveTo(area.x, y));
         push(&mut out, Clear(ClearType::CurrentLine));
@@ -3094,6 +3101,7 @@ fn buffer_to_ansi(buf: &Buffer) -> String {
         }
         out.push_str("\u{1b}[0m");
     }
+    push(&mut out, RestorePosition);
     out
 }
 
@@ -3796,6 +3804,8 @@ mod tests {
             );
         }
         assert!(!rendered.contains("\u{1b}[2J"));
+        // ...and hands the cursor back to the frame mpv is halfway through painting.
+        assert!(rendered.starts_with("\u{1b}7") && rendered.ends_with("\u{1b}8"));
         assert!(rendered.contains("PLAYING"));
         assert!(rendered.contains("Test Title"));
         // Buttons render as `(key) icon label`; match the label. Video mode's row is
@@ -4314,5 +4324,58 @@ mod tests {
             "queue controls survived: {text}"
         );
         assert!(text.contains("✕ Quit (q)"), "keybar missing:\n{text}");
+    }
+
+    #[test]
+    fn no_terminal_size_is_too_odd_to_draw() {
+        // A window being dragged passes through every size on the way, including ones no
+        // layout was written for, and a frame is drawn at the size the terminal has now from
+        // state that still describes the one before. A sum that goes below zero at any of
+        // them panics in a debug build, which is where this test catches it; a release build
+        // wraps instead and puts the widget somewhere off the screen - the opening screen at
+        // sixteen columns was blank that way. An index out of range panics in both.
+        let s = Settings::default();
+        let dl = DownloadState::Idle;
+        let rows = entries();
+        let on = vec![true; effects::ALL.len()];
+        let mut prompt = PromptState::default();
+        prompt.insert_str("https://example.com/a-link-longer-than-a-narrow-terminal-is-wide");
+        let loud = VizSnapshot {
+            bands: VizSnapshot::default().bands.map(|_| 1.0),
+            rms: [1.0; 2],
+            peak: [1.0; 2],
+            wave: vec![(1.0, 0.0); 400],
+            live: true,
+        };
+        let mut vizzers = crate::visualizer::all();
+        let mut ui = state(&rows, &s, &dl);
+        ui.cover = true;
+        ui.meter = Some([(1.0, 1.0); 2]);
+        ui.toast = Some("a notice long enough to need trimming on a narrow terminal");
+        ui.effects_on = &on;
+        ui.prompt = Some(&prompt);
+        let sizes = [0, 1, 2, 5, 9, 14, 21, 44, 80, 160];
+        let views = [
+            View::Main,
+            View::Menu,
+            View::Settings,
+            View::Effects,
+            View::Equalizer,
+            View::Open,
+        ];
+        for (view, pane) in views.iter().flat_map(|&v| Pane::ALL.map(|p| (v, p))) {
+            for (w, h) in sizes.iter().flat_map(|&w| sizes.map(|h| (w, h))) {
+                // The state as it should be, then as a resize leaves it for a frame: still
+                // describing a far larger terminal, or a far smaller one.
+                for (cols, rows) in [(w, h), (160, 160), (1, 1)] {
+                    (ui.view, ui.pane, ui.term_cols, ui.term_rows) = (view, pane, cols, rows);
+                    let mut tui = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+                    for viz in &mut vizzers {
+                        draw(&mut tui, &ui, Some((&mut **viz, &loud))).unwrap();
+                    }
+                    video_bottom(&ui);
+                }
+            }
+        }
     }
 }

@@ -10,8 +10,8 @@
 mod common;
 
 use common::{
-    Ipc, Pty, Scratch, find_mpv_child, make_cover_track, make_tracks, set_setting, signal,
-    write_config,
+    Ipc, Pty, Scratch, Screen, find_mpv_child, make_cover_track, make_tracks, make_video,
+    set_setting, signal, write_config,
 };
 use std::time::Duration;
 
@@ -485,4 +485,135 @@ fn the_equalizer_reaches_the_deck_and_flat_really_is_nothing() {
     }
     assert!(cleared, "Flat left filters behind: {}", af());
     pty.quit();
+}
+
+/// How much of the screen is picture. The picture is half-blocks from edge to edge; nothing
+/// the interface draws comes close.
+fn picture_cells(screen: &Screen) -> usize {
+    screen.text().matches('\u{2584}').count()
+}
+
+/// Open the view chooser and click a row of it by name, wherever the cursor happens to start.
+fn choose_pane(pty: &mut Pty, pane: &str) {
+    pty.key("v");
+    let chooser = pty.screen.text();
+    let (row, line) = chooser
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains(pane) && line.contains('\u{2039}'))
+        .unwrap_or_else(|| panic!("no {pane} row in the chooser:\n{chooser}"));
+    let col = line.split(pane).next().unwrap_or_default().chars().count();
+    pty.click(col as u16, row as u16);
+}
+
+/// mpv's ASCII renderer and the interface take turns on one terminal, and mpv behaves as
+/// though the terminal were its own: every renderer it stops leaves the alternate screen
+/// and switches mouse reporting off. So: the picture has to come up with the transport bar
+/// still under it, go away without leaving a cell of itself behind, and at no point may the
+/// user find themselves looking at their shell.
+#[test]
+fn the_picture_comes_and_goes_and_mpv_never_takes_the_terminal() {
+    require_tools!();
+    let scratch = Scratch::new("picture");
+    let clip = scratch.join("media").join("clip.mkv");
+    make_video(&clip, 40);
+
+    let mut pty = Pty::spawn(&[clip.to_str().expect("utf-8 path")], &scratch.0, 100, 34);
+    assert!(pty.wait_for(Duration::from_secs(20), |s| s.contains("YTM://PLAYER")));
+
+    choose_pane(&mut pty, "VIDEO");
+    assert!(
+        pty.wait_for(Duration::from_secs(15), |s| picture_cells(s) > 1000),
+        "no picture came up:\n{}",
+        pty.screen.text()
+    );
+    // Long enough for the bar to be repainted over a moving picture a few dozen times.
+    pty.pump(Duration::from_secs(2));
+    assert!(
+        pty.screen.contains("Pause (Space)"),
+        "the transport bar is not under the picture:\n{}",
+        pty.screen.text()
+    );
+
+    // On to a pane with no half-blocks of its own. The whole screen is the interface's
+    // again, at once and for good: nothing mpv still had in the pipe may land on it.
+    choose_pane(&mut pty, "LIBRARY");
+    assert!(
+        pty.wait_for(Duration::from_secs(5), |s| s.contains("VIEW ▸ LIBRARY")),
+        "the library did not replace the picture:\n{}",
+        pty.screen.text()
+    );
+    pty.pump(Duration::from_secs(1));
+    assert_eq!(
+        picture_cells(&pty.screen),
+        0,
+        "the picture left cells behind:\n{}",
+        pty.screen.text()
+    );
+    assert_eq!(
+        pty.screen.alt_screen_exits, 0,
+        "mpv dropped the terminal back to the shell's screen"
+    );
+    pty.quit();
+}
+
+/// Issue #5, one key further on. A folder's files are the same files they are when opened
+/// one at a time, pictures included - but a track that came from a list had its picture
+/// looked for the way a YouTube playlist's is, by asking yt-dlp about it, and yt-dlp has
+/// nothing to say about a path. The folder played and the picture pane said there was none.
+#[test]
+fn a_video_in_a_folder_has_its_picture() {
+    require_tools!();
+    let scratch = Scratch::new("folder_picture");
+    let folder = scratch.join("media");
+    make_video(&folder.join("clip.mkv"), 40);
+
+    let mut pty = Pty::spawn(&[folder.to_str().expect("utf-8 path")], &scratch.0, 100, 34);
+    assert!(pty.wait_for(Duration::from_secs(20), |s| s.contains("YTM://PLAYER")));
+    choose_pane(&mut pty, "VIDEO");
+    assert!(
+        pty.wait_for(Duration::from_secs(15), |s| picture_cells(s) > 1000),
+        "no picture came up:\n{}",
+        pty.screen.text()
+    );
+    pty.quit();
+}
+
+/// Issue #6. `--help` and `--version` are answers, not complaints: they go to stdout, exit
+/// clean, and print nothing else - so `ytmplayer --help | less` and a packaging script's
+/// `$(ytmplayer --version)` both get exactly what they asked for. Needs no mpv and no
+/// terminal, which is rather the point of them.
+#[test]
+fn help_and_version_answer_on_stdout_and_exit_clean() {
+    let version = concat!("ytmplayer ", env!("CARGO_PKG_VERSION"), "\n");
+    for (flag, expected) in [
+        ("--help", "Usage: ytmplayer "),
+        ("-h", "Usage: ytmplayer "),
+        ("--version", version),
+        ("-V", version),
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ytmplayer"))
+            .arg(flag)
+            .output()
+            .expect("run ytmplayer");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{flag} exited {}", output.status);
+        assert!(stdout.starts_with(expected), "{flag} printed {stdout:?}");
+        assert!(output.stderr.is_empty(), "{flag} also wrote to stderr");
+    }
+    // The version is the whole answer, not the first line of a usage screen.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ytmplayer"))
+        .arg("--version")
+        .output()
+        .expect("run ytmplayer");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), version);
+
+    // A flag that does not exist is the other case: an error, on stderr, non-zero.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ytmplayer"))
+        .arg("--no-such-flag")
+        .output()
+        .expect("run ytmplayer");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown option --no-such-flag"));
 }

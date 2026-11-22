@@ -562,8 +562,8 @@ impl BeatTracker {
 
         let peak = self.ac_at(period);
         let mut floor = 0.0f32;
-        for lag in MIN_LAG..=MAX_LAG.min(lags - 1) {
-            floor += self.ac[lag];
+        for ac in self.ac.iter().take(MAX_LAG.min(lags - 1) + 1).skip(MIN_LAG) {
+            floor += ac;
         }
         floor /= (MAX_LAG.min(lags - 1) + 1 - MIN_LAG) as f32;
 

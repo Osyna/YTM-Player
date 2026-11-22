@@ -6,8 +6,40 @@ All notable changes to YTM-Player. Format based on
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-21
+
 ### Added
 
+- **yt-dlp is fetched, and kept current, by the player.** Sites change what they serve
+  every few weeks, yt-dlp follows within days and a distribution's package within
+  months - which is how a player that worked the day it was installed stops resolving
+  anything, and why "update yt-dlp" is the answer to most reports about one. So the
+  first time a session needs it - at most once a day, and never for a session that only
+  plays local files - the player asks GitHub which release is the latest, and when
+  neither the installed yt-dlp nor its own copy is that recent it downloads the release
+  with `curl` into `~/.local/state/ytmplayer/bin/`, checks it against the SHA-256 the
+  release publishes, checks that it starts and reports that version, and renames it
+  into place.
+  - A machine with no yt-dlp at all is given one the same way, announced on the
+    terminal before the interface comes up.
+  - The small zip when there is a Python to run it, the self-contained build when there
+    is not - glibc or musl, x86_64 or aarch64, chosen by what the machine can start
+    rather than by what the player was built for, because the player is static and its
+    own target says nothing about the host.
+  - mpv's resolver uses the same copy: its directory goes on the front of the `PATH`
+    mpv is started with, and the hook looks the name up every time it runs one.
+  - The copy retires once the system's has caught up, since that one starts faster and
+    has its optional dependencies wired in.
+  - Every way it can fail - no network, no `curl`, a build that will not start here -
+    leaves whatever yt-dlp already worked in use, and costs one short wait a day
+    rather than one per launch.
+- **`man ytmplayer`.** Every flag, key, mouse action, file and environment variable on
+  one page, installed by every package and shipped in the tarball
+  ([#6](https://github.com/Osyna/YTM-Player/issues/6)).
+- **A folder plays everything under it.** Albums live in folders inside folders.
+  `ytmplayer ~/Music` now walks them - twelve levels, hidden directories skipped - and
+  queues the lot in path order, where it used to take only the files lying directly in
+  the folder it was given ([#5](https://github.com/Osyna/YTM-Player/issues/5)).
 - **The effects rack is 38 filters, rekordbox-style.** It was six. Delays (slapback,
   ping pong, a darkening tape delay), reverbs up to a cathedral, flanger, phaser,
   chorus and doubler, tremolo and vibrato, hard square `Trans` and `Stutter` gates,
@@ -213,6 +245,19 @@ All notable changes to YTM-Player. Format based on
 
 ### Changed
 
+- **Packages need `curl` and no longer insist on `yt-dlp`.** `curl` is what fetches
+  yt-dlp, so it moves from recommended to required; yt-dlp moves the other way, so a
+  distribution that does not package one can no longer refuse to install the player.
+  An installed yt-dlp is still the one used, for as long as it is the latest release.
+- **The tarball carries what the packages install**: the man page, the transition
+  scores and `WRITING-TRANSITIONS.md`. The Arch package is built from it, and now
+  matches the `.deb` and `.rpm`.
+- **Leaving the picture, and resizing under it, no longer wait on mpv.** Both used to
+  put the interface to sleep - a quarter of a second for mpv's renderer to finish
+  resetting the terminal, 150 ms for it to restart at a new size - because what it
+  wrote on the way out had to land before anything could be drawn over it. Its output
+  is now simply discarded from the moment the screen is taken back (see Fixed), so
+  there is nothing to wait for.
 - **The README is a pitch now, not just a reference.** The old one opened straight
   into a wall of bullet points; this one leads with a hero screenshot, a nine-line
   "what it does," and a six-image gallery (now playing, queue, scope, library,
@@ -580,6 +625,71 @@ All notable changes to YTM-Player. Format based on
 
 ### Fixed
 
+- **A path that is not there is reported as a path that is not there.** The only test
+  for "is this a file" was whether it existed, so `ytmplayer ~/Musik/` - a typo, an
+  unmounted drive - went to yt-dlp, and came back as a page of search hits or, in
+  3.0.0, as `'…' is not a valid URL`. Anything written as a path - starting with `/`,
+  `~`, `./` or `../` - is one whether or not it exists, and the error names it and says
+  why it could not be opened ([#5](https://github.com/Osyna/YTM-Player/issues/5)).
+- **A video in a folder has its picture.** Opened as one of a folder or a playlist
+  file, a video on disk had its picture looked for the way a YouTube playlist's is - by
+  asking yt-dlp about it - and yt-dlp has nothing to say about a path: the file played
+  and the picture pane said there was no video for it. A file on disk is now asked for
+  the picture it carries, whichever way it was opened.
+- **Typed words are searched for even when they begin with `yt`.** Anything starting
+  `yt` was passed to yt-dlp as one of its own prefixes instead of being searched. Only
+  `ytsearch…:` is one; `spotify:` URIs are recognised alongside the links.
+- **`--help` and `--version` answer on stdout, and say only what was asked.** `--help`
+  went to stderr, where `ytmplayer --help | less` shows an empty pager, and `--version`
+  printed the whole usage text after the version. A flag that is not understood still
+  gets the usage, on stderr, with a non-zero exit
+  ([#6](https://github.com/Osyna/YTM-Player/issues/6)).
+- **A single YouTube link no longer dies with `mpv stopped` before it plays.** YouTube
+  now refuses a freshly resolved stream URL with a 403 for the first several seconds
+  of its life, and says when it will stop refusing: yt-dlp reports it as
+  `available_at`. A link opened on its own was handed to mpv at once, mpv was refused,
+  and a one-track session ended there. The resolver now waits until that moment (never
+  more than thirty seconds, and it says so while it does), and mpv is started with
+  reconnection on a 403 for the streams it resolves by itself.
+- **The interface no longer asks the terminal where its cursor is.** Every view
+  change, resize and cover change went through ratatui's `clear`, which first sends a
+  cursor position query - written around the frame, answered on the input stream, and
+  waited on for up to two seconds with everything frozen. A scripted twelve-second
+  session of opening and closing views sent ten of them. On a terminal that answers
+  late or not at all (a slow link, a multiplexer, a recorder) each one was a stall,
+  and the one in the draw path ended the session with a read error. The screen is now
+  invalidated without the question.
+- **A frame reaches the terminal whole.** Clearing the screen, repainting it and
+  placing the cover were separate writes, so the cleared screen was a frame of its own
+  - the flash on every view change. They are one write now, inside a synchronized
+  update, which a terminal that supports it shows in a single step and the rest
+  ignore.
+- **mpv does not get to switch the terminal's modes.** Its `tct` renderer believes it
+  owns a terminal: it enters and leaves the alternate screen, shows and hides the
+  cursor and turns mouse reporting on and off whenever a renderer starts or stops -
+  which includes every track change with the picture up. The leaving was the damage:
+  the user was looking at their shell's scrollback, with clicks dead, until the player
+  put its own modes back a quarter of a second later. mpv's stream is now let through
+  only while there is a picture on screen, and only the part of it that paints; its
+  erase is cut down to the picture's rows, so the transport bar under it is not wiped
+  with every new renderer either. And it is shut out before the terminal is handed
+  back on exit, so a frame still on its way cannot land on the shell's screen.
+- **The transport bar no longer tears the picture.** mpv writes a row as one cursor
+  move followed by cell after cell, and the pipe can hand the bar the gap halfway
+  along one. The rest of that row was then painted from wherever the bar had left the
+  cursor: a run of picture cells at the end of the status line, about once in a
+  hundred repaints. The bar saves and restores the cursor around itself.
+- **The cover survives a resize.** Resizing cleared the screen and redrew everything
+  except the cover, which is only sent again when its box moves - so widening the
+  window left an empty box where the picture had been until the track changed.
+- **A terminal narrower than twenty columns no longer gets a blank opening screen.**
+  The sum that centres the URL bar went below zero there and put it off the screen.
+  Every view is now drawn at every size from nothing to 160 columns in the test suite,
+  with the state still describing the size before - which is what a resize looks like
+  for one frame.
+- **ffmpeg can no longer swallow keystrokes.** The ffmpeg that finalizes a saved track
+  inherited the terminal as its standard input and read from it, so a key pressed
+  while a download finished could vanish. Helper programs are started with no input.
 - **The fade-length row said `20 s = 13.5+6.5` and was read as two tracks.** It is one
   span with the old track's end inside it - both audible for 13.5 s, then 6.5 s shaping
   the new one alone - but "13.5+6.5" reads as "13.5 seconds of the outgoing track plus
@@ -877,6 +987,7 @@ next/previous.
   ([#1](https://github.com/Osyna/YTM-Player/pull/1), thanks
   [@ConttiDev](https://github.com/ConttiDev)).
 
-[Unreleased]: https://github.com/Osyna/YTM-Player/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/Osyna/YTM-Player/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/Osyna/YTM-Player/releases/tag/v3.1.0
 [3.0.0]: https://github.com/Osyna/YTM-Player/releases/tag/v3.0.0
 [2.0]: https://github.com/Osyna/YTM-Player/commits/main
