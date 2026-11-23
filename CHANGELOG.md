@@ -8,6 +8,11 @@ All notable changes to YTM-Player. Format based on
 
 ## [3.1.0] - 2026-11-21
 
+### Fixed
+
+- CI now uses mpv's clocked null audio output so playback tests run without a sound
+  card. Install instructions identify ARM64 assets and use `zypper` for openSUSE.
+
 ### Added
 
 - **yt-dlp is fetched, and kept current, by the player.** Sites change what they serve

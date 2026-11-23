@@ -343,8 +343,11 @@ sudo pacman -U ytmplayer-bin-3.1.0-1-x86_64.pkg.tar.zst
 # Debian, Ubuntu, Mint, Pop!_OS
 sudo apt install ./ytmplayer_3.1.0-1_amd64.deb
 
-# Fedora, RHEL, openSUSE
+# Fedora, RHEL where mpv is available
 sudo dnf install ./ytmplayer-3.1.0-1.x86_64.rpm
+
+# openSUSE
+sudo zypper install ./ytmplayer-3.1.0-1.x86_64.rpm
 ```
 
 On Arch, `makepkg -si` against the attached `PKGBUILD` works too, and builds for aarch64.
@@ -359,7 +362,10 @@ sudo install -m755 ytmplayer-3.1.0-x86_64-linux/ytmplayer /usr/local/bin/
 sudo install -Dm644 ytmplayer-3.1.0-x86_64-linux/ytmplayer.1 /usr/local/share/man/man1/ytmplayer.1
 ```
 
-`aarch64` builds of every format are attached too. Checksums in `SHA256SUMS`.
+These commands use x86-64 filenames. On ARM64, choose the `arm64.deb`,
+`aarch64.rpm`, or `aarch64-linux.tar.gz` asset instead. On Arch ARM, use the
+attached `PKGBUILD`. Compare your download with `SHA256SUMS`; after installing,
+run `ytmplayer --version` to check it.
 
 Or build it — no C toolchain, no system libraries, six dependencies:
 

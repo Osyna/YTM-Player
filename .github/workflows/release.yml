@@ -150,14 +150,18 @@ jobs:
 
           **Debian / Ubuntu / Mint** — \`sudo apt install ./ytmplayer_$V-1_amd64.deb\`
 
-          **Fedora / RHEL / openSUSE** — \`sudo dnf install ./ytmplayer-$V-1.x86_64.rpm\`
+          **Fedora / RHEL where mpv is available** — \`sudo dnf install ./ytmplayer-$V-1.x86_64.rpm\`
+
+          **openSUSE** — \`sudo zypper install ./ytmplayer-$V-1.x86_64.rpm\`
 
           **Any other distribution** — extract \`ytmplayer-$V-x86_64-linux.tar.gz\` and put
           \`ytmplayer\` on your PATH (and \`ytmplayer.1\` in a \`man1\` directory). It is
           statically linked against musl, so it needs no libraries at all.
 
-          \`aarch64\` builds of every format are attached for ARM machines. \`SHA256SUMS\` covers
-          all of them.
+          These commands use x86-64 filenames. On ARM64, choose the \`arm64.deb\`,
+          \`aarch64.rpm\`, or \`aarch64-linux.tar.gz\` asset instead. On Arch ARM, use the
+          attached \`PKGBUILD\`. Compare your download with \`SHA256SUMS\`; after installing,
+          run \`ytmplayer --version\` to check it.
           EOF
           cat notes.md
 
