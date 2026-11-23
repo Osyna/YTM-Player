@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
   # Builds every artifact without publishing, so the packaging can be tested before tagging.
   workflow_dispatch:
 
@@ -22,7 +22,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl,  arch: x86_64 }
+          - { target: x86_64-unknown-linux-musl, arch: x86_64 }
           - { target: aarch64-unknown-linux-musl, arch: aarch64 }
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,11 @@ jobs:
           V=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           D=ytmplayer-$V-${{ matrix.arch }}-linux
           mkdir -p dist "$D"
-          cp target/${{ matrix.target }}/release/ytmplayer README.md CHANGELOG.md LICENSE "$D/"
+          # Everything a package installs is in the tarball too, so the Arch package (built
+          # from it) and a by-hand install get the man page and the example transitions.
+          cp target/${{ matrix.target }}/release/ytmplayer README.md CHANGELOG.md LICENSE \
+             docs/ytmplayer.1 docs/WRITING-TRANSITIONS.md "$D/"
+          mkdir "$D/transitions" && cp transitions/*.mix "$D/transitions/"
           tar -czf "dist/$D.tar.gz" "$D"
           cargo deb --no-build --target ${{ matrix.target }} --output dist
           cargo generate-rpm --target ${{ matrix.target }} --output dist
@@ -134,9 +138,10 @@ jobs:
         run: |
           V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           cat > notes.md <<EOF
-          Needs \`mpv\` and \`yt-dlp\` installed; \`ffmpeg\` is optional and only used to merge
-          separate video and audio streams when downloading above the MP3 tier. Every package
-          declares those for you.
+          Needs \`mpv\` and \`curl\`. \`yt-dlp\` is fetched and kept up to date by the player
+          itself, and an installed one is used for as long as it is the latest release.
+          \`ffmpeg\` is optional: saving tracks, cover art, library tags and beat mixing use it.
+          Every package declares those for you, and installs \`man ytmplayer\`.
 
           ### Install
 
@@ -148,8 +153,8 @@ jobs:
           **Fedora / RHEL / openSUSE** — \`sudo dnf install ./ytmplayer-$V-1.x86_64.rpm\`
 
           **Any other distribution** — extract \`ytmplayer-$V-x86_64-linux.tar.gz\` and put
-          \`ytmplayer\` on your PATH. It is statically linked against musl, so it needs no
-          libraries at all.
+          \`ytmplayer\` on your PATH (and \`ytmplayer.1\` in a \`man1\` directory). It is
+          statically linked against musl, so it needs no libraries at all.
 
           \`aarch64\` builds of every format are attached for ARM machines. \`SHA256SUMS\` covers
           all of them.

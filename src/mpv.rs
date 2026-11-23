@@ -108,11 +108,23 @@ impl Mpv {
             .arg("--demuxer-readahead-secs=100000")
             // Default max is 130; raised so [up] can push past 100%.
             .arg("--volume-max=150")
+            // YouTube answers 403 for the first seconds of a freshly resolved stream's
+            // life (yt-dlp's `available_at`). mpv 0.42's `ytdl_hook` waits that out; an
+            // older one opens the stream at once, is refused, and skips the track - every
+            // track. Letting ffmpeg retry a 403 (after 1, 3 and 7 s) is what those
+            // versions need to play a YouTube playlist at all. It also reconnects a
+            // stream the network dropped mid-track.
+            .arg("--stream-lavf-o=reconnect=1,reconnect_on_http_error=403,reconnect_delay_max=7")
             .stdin(Stdio::null())
             // Piped, not inherited: mpv must not paint the terminal behind our back. Its `tct`
             // frames are forwarded by the one writer that owns the screen (see `tty::Terminal`).
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // mpv's `ytdl_hook` resolves playlist entries with whichever `yt-dlp` its `PATH`
+        // finds; ours goes first, so the hook never runs an older one than the player does.
+        if let Some(path) = crate::ytdlp::search_path() {
+            cmd.env("PATH", path);
+        }
 
         match media {
             Media::Direct { url, title } => {
@@ -626,25 +638,14 @@ impl Mpv {
     }
 
     /// Constrain the `tct` renderer to `cols` x `rows`, leaving the bottom rows for our own
-    /// status bar. Only takes effect at VO init - see [`Mpv::resync_tct_geometry`].
+    /// status bar.
+    ///
+    /// Read once, when the renderer starts: a change does not re-layout a picture that is
+    /// already streaming (confirmed empirically). The video track has to be deselected and
+    /// selected again for mpv to start a new renderer, which is the one that picks this up.
     pub fn set_tct_geometry(&mut self, cols: u16, rows: u16) -> Result<(), MpvError> {
         self.set_property("vo-tct-width", json!(cols.max(1)))?;
         self.set_property("vo-tct-height", json!(rows.max(1)))
-    }
-
-    /// Apply new terminal dimensions to an *already streaming* ASCII video.
-    ///
-    /// `vo-tct-width`/`-height` are read once when the `tct` output initializes and are not
-    /// re-applied on a plain property change - confirmed empirically (a live `set_property`
-    /// leaves already-active output rendering at the old size). Deselecting and reselecting the
-    /// video track forces mpv to tear down and reinitialize the renderer, which does pick up
-    /// the current property values. This briefly drops and re-enters the alt screen/mouse
-    /// capture mpv's `tct` output owns; callers should follow up with `ui::reassert_terminal()`.
-    pub fn resync_tct_geometry(&mut self, cols: u16, rows: u16) -> Result<(), MpvError> {
-        self.set_tct_geometry(cols, rows)?;
-        self.set_video_enabled(false)?;
-        std::thread::sleep(Duration::from_millis(150));
-        self.set_video_enabled(true)
     }
 
     /// Point mpv's stream recorder at `path`, or pass `None` to stop.

@@ -332,30 +332,31 @@ both decks pick it up before the next transition.
 
 Grab a package for your distribution from the
 [latest release](https://github.com/Osyna/YTM-Player/releases/latest). Each one pulls in
-**mpv** and **yt-dlp** for you, and suggests **ffmpeg** — optional, used to merge separate
-video and audio streams when downloading above MP3. **curl** (present on almost every system)
-is used only to read Spotify links.
+**mpv** and **curl** for you. **yt-dlp** is fetched and kept up to date by the player itself
+(an installed one is used for as long as it is the latest release), and wants **deno** for
+YouTube. **ffmpeg** is optional: saving tracks, cover art, library tags and beat mixing use it.
 
 ```sh
 # Arch, Manjaro, EndeavourOS
-sudo pacman -U ytmplayer-bin-3.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ytmplayer-bin-3.1.0-1-x86_64.pkg.tar.zst
 
 # Debian, Ubuntu, Mint, Pop!_OS
-sudo apt install ./ytmplayer_3.0.0-1_amd64.deb
+sudo apt install ./ytmplayer_3.1.0-1_amd64.deb
 
 # Fedora, RHEL, openSUSE
-sudo dnf install ./ytmplayer-3.0.0-1.x86_64.rpm
+sudo dnf install ./ytmplayer-3.1.0-1.x86_64.rpm
 ```
 
 On Arch, `makepkg -si` against the attached `PKGBUILD` works too, and builds for aarch64.
 
 Any other distribution — the tarball is one static binary that needs no libraries. Install
-`mpv` and `yt-dlp` yourself:
+`mpv` and `curl` yourself:
 
 ```sh
-curl -LO https://github.com/Osyna/YTM-Player/releases/latest/download/ytmplayer-3.0.0-x86_64-linux.tar.gz
-tar xzf ytmplayer-3.0.0-x86_64-linux.tar.gz
-sudo install -m755 ytmplayer-3.0.0-x86_64-linux/ytmplayer /usr/local/bin/
+curl -LO https://github.com/Osyna/YTM-Player/releases/latest/download/ytmplayer-3.1.0-x86_64-linux.tar.gz
+tar xzf ytmplayer-3.1.0-x86_64-linux.tar.gz
+sudo install -m755 ytmplayer-3.1.0-x86_64-linux/ytmplayer /usr/local/bin/
+sudo install -Dm644 ytmplayer-3.1.0-x86_64-linux/ytmplayer.1 /usr/local/share/man/man1/ytmplayer.1
 ```
 
 `aarch64` builds of every format are attached too. Checksums in `SHA256SUMS`.
@@ -367,6 +368,7 @@ git clone https://github.com/Osyna/YTM-Player
 cd YTM-Player
 cargo build --release
 sudo install -m755 target/release/ytmplayer /usr/local/bin/
+sudo install -Dm644 docs/ytmplayer.1 /usr/local/share/man/man1/ytmplayer.1
 ```
 
 ## Using it
@@ -378,7 +380,8 @@ ytmplayer ~/Music --shuffle          # a folder, in a random order
 ytmplayer                            # no argument: a URL bar — paste, type, or Tab to resume
 ```
 
-`--shuffle`, `--volume <0-150>`, `--version` and `--help` are the whole flag set.
+`--shuffle`, `--volume <0-150>`, `--version` and `--help` are the whole flag set, and
+`man ytmplayer` has every key, file and environment variable on one page.
 
 Playlist URLs need quoting, or the shell will background the job on the `&`:
 
@@ -450,8 +453,26 @@ Spotify is different: its streams are DRM'd, so a Spotify link is a *reference*,
 not a source. The player reads the public `open.spotify.com/embed` page — the
 JSON Spotify's own iframe player loads — for each track's name and artist, then
 plays the closest YouTube match: one search for a track, one per entry for a
-playlist or album. That embed fetch is the only thing that shells out to `curl`,
-so Spotify links need it on your PATH; nothing else does.
+playlist or album. That embed fetch shells out to `curl`, so Spotify links need it
+on your PATH.
+
+### yt-dlp, kept current
+
+Sites change what they serve every few weeks, yt-dlp follows within days, and a
+distribution's package follows within months — which is how a player that worked
+the day it was installed quietly stops resolving anything. So the first time a
+session needs yt-dlp — at most once a day, never for local files — the player
+asks GitHub which release is the latest. When neither the installed yt-dlp nor
+its own copy is that recent, it downloads the release with `curl` into
+`~/.local/state/ytmplayer/bin/`, checks it against the SHA-256 the release
+publishes, checks that it starts and reports that version, and renames it into
+place; mpv's own resolver is pointed at the same copy. A machine with no yt-dlp
+at all gets one the same way.
+
+It takes the small zip when there is a Python to run it and the self-contained
+build otherwise, glibc or musl, x86_64 or aarch64. Once the system's yt-dlp has
+caught up, the player's copy is deleted and the system's is used again. If the
+check or the download fails, whatever yt-dlp already worked keeps being used.
 
 ### Audio first, a picture only when asked
 
@@ -650,6 +671,20 @@ escape sequence and no UTF-8 character is half-written. Both painters now go
 through the same lock, and a short write can't hurt anyone because nothing else
 is painting while it finishes.
 
+Being the one writer is also what lets the player decide *what* of mpv's reaches
+the screen. mpv believes it owns a terminal: it leaves the alternate screen,
+shows the cursor and switches mouse reporting off whenever a renderer stops —
+which is every track change with the picture up. Those are dropped, its erase is
+cut down to the picture's rows, and its stream is let through only while there
+is a picture to show, so taking the screen back needs no pause for mpv to finish
+talking. The transport bar saves and restores the cursor around itself, because
+it can land halfway along a row mpv is painting.
+
+The interface's own frames go out the same way: clear, repaint and cover in one
+write inside a synchronized update, so a view change is one step for the eye
+rather than a blank screen and then a redraw — and nothing ever asks the
+terminal a question it has to wait on the answer to.
+
 ### Tested against a real player
 
 Most of this is tested the ordinary way - pure functions, and views rendered into
@@ -689,7 +724,8 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 sudo pacman -Rns ytmplayer-bin   # Arch
 sudo apt remove ytmplayer        # Debian / Ubuntu
 sudo dnf remove ytmplayer        # Fedora / RHEL
-sudo rm /usr/local/bin/ytmplayer # tarball or built from source
+sudo rm /usr/local/bin/ytmplayer /usr/local/share/man/man1/ytmplayer.1   # tarball or built from source
+rm -r ~/.local/state/ytmplayer   # history, resume point, and the player's own yt-dlp
 ```
 
 ## Contributing

@@ -10,29 +10,105 @@
 //! So mpv no longer holds the terminal at all: its output arrives here on a pipe. Everything that
 //! reaches the screen goes through one lock, and mpv's stream is only ever cut at a point where no
 //! escape sequence and no UTF-8 character is half-written.
+//!
+//! Being the one writer is also what lets this decide *what* of mpv's reaches the screen. mpv
+//! believes it owns a terminal: it switches to the alternate screen and back, shows and hides
+//! the cursor, turns mouse reporting on and off and wipes the display, all on its own schedule -
+//! whenever a renderer starts or stops, which includes every track change. None of that is its
+//! to decide here, so its stream is let through only while there is a picture to show, and only
+//! the part of it that paints.
 
 use parking_lot::Mutex;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
+/// Synchronized output: between the two the terminal keeps showing the previous frame, then
+/// shows the new one whole. A terminal that does not know the mode ignores both.
+const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
 
 /// Handle to the terminal; clones share one lock.
 #[derive(Clone)]
-pub struct Terminal(Arc<Mutex<io::Stdout>>);
+pub struct Terminal(Arc<Shared>);
+
+struct Shared {
+    out: Mutex<io::Stdout>,
+    /// The interface frame under construction - see [`Terminal::queue`].
+    frame: Mutex<Vec<u8>>,
+    /// How many rows, counted from the top, are mpv's to paint. Zero while there is no picture,
+    /// which is what makes [`Terminal::forward`] throw its stream away.
+    video_rows: AtomicU16,
+}
 
 impl Terminal {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(io::stdout())))
+        Self(Arc::new(Shared {
+            out: Mutex::new(io::stdout()),
+            frame: Mutex::new(Vec::new()),
+            video_rows: AtomicU16::new(0),
+        }))
     }
 
     /// Paint `bytes` as one indivisible unit. Short writes are fine here - nothing else can be
     /// painting while the lock is held.
     pub fn paint(&self, bytes: &[u8]) -> io::Result<()> {
-        let mut out = self.0.lock();
+        let mut out = self.0.out.lock();
         out.write_all(bytes)?;
         out.flush()
+    }
+
+    /// Add to the interface frame under construction. Nothing reaches the screen until
+    /// [`Terminal::commit`].
+    pub fn queue(&self, bytes: &[u8]) {
+        let mut frame = self.0.frame.lock();
+        if frame.is_empty() {
+            frame.extend_from_slice(SYNC_BEGIN);
+        }
+        frame.extend_from_slice(bytes);
+    }
+
+    /// Put the queued frame on screen, whole.
+    ///
+    /// One paint under the lock keeps mpv out of it, and the synchronized-output markers around
+    /// it keep the terminal from showing it half-applied. Together that is what makes "clear the
+    /// screen and redraw everything" one step for the eye, instead of a blank screen followed by
+    /// a repaint.
+    pub fn commit(&self) -> io::Result<()> {
+        let mut frame = self.0.frame.lock();
+        if frame.is_empty() {
+            return Ok(());
+        }
+        frame.extend_from_slice(SYNC_END);
+        let painted = self.paint(&frame);
+        frame.clear();
+        painted
+    }
+
+    /// Give the top `rows` rows to mpv's picture and start letting its output through, on a
+    /// blank screen.
+    ///
+    /// Wiped here, under the lock, rather than by the caller afterwards: a clear that lands
+    /// after mpv's first frame erases it, and a paused player never paints a second one. And
+    /// all of the screen rather than just those rows, because a cover picture is not made of
+    /// cells and only erasing the whole display takes it away.
+    pub fn open_video(&self, rows: u16) -> io::Result<()> {
+        let mut out = self.0.out.lock();
+        self.0.video_rows.store(rows, Ordering::Relaxed);
+        // The last renderer may have been shut out halfway through a frame, which leaves the
+        // terminal holding a synchronized update open - and showing nothing until it ends.
+        out.write_all(SYNC_END)?;
+        out.write_all(b"\x1b[0m\x1b[2J")?;
+        out.flush()
+    }
+
+    /// Take the screen back. Whatever mpv still has in the pipe - the rest of a frame, its
+    /// renderer's goodbye - is discarded from here on, so nothing has to wait for it to drain
+    /// before the interface is drawn where the picture was.
+    pub fn close_video(&self) {
+        self.0.video_rows.store(0, Ordering::Relaxed);
     }
 
     /// Forward mpv's video output until the pipe closes.
@@ -46,13 +122,65 @@ impl Terminal {
             }
             let cut = safe_cut(&pending);
             if cut > 0 {
-                if self.paint(&pending[..cut]).is_err() {
+                if self.paint_picture(&pending[..cut]).is_err() {
                     return;
                 }
                 pending.drain(..cut);
             }
         }
     }
+
+    /// Paint a stretch of mpv's stream, if there is a picture on screen for it to belong to.
+    fn paint_picture(&self, stream: &[u8]) -> io::Result<()> {
+        let mut out = self.0.out.lock();
+        // Read under the lock: a frame let through before the interface took the screen back
+        // must not be painted after it.
+        let rows = self.0.video_rows.load(Ordering::Relaxed);
+        if rows == 0 {
+            return Ok(());
+        }
+        picture_only(stream, rows, &mut *out)?;
+        out.flush()
+    }
+}
+
+/// Blank the top `rows` rows and nothing below them: cursor to the end of the last one, then
+/// erase from the start of the screen up to it.
+fn erase_rows(out: &mut impl Write, rows: u16) -> io::Result<()> {
+    write!(out, "\x1b[0m\x1b[{rows};999H\x1b[1J")
+}
+
+/// Write `stream` - whole sequences only, which is how [`safe_cut`] leaves it - without the
+/// parts that are mpv running a terminal rather than painting a picture:
+///
+/// - Private modes (`ESC [ ? … h` and `l`): the alternate screen, the cursor, mouse reporting.
+///   mpv sets them when a renderer starts and resets them when it stops, and the reset is the
+///   destructive one - it drops the terminal back to the shell's screen and switches off the
+///   reporting that clicks arrive on, in the middle of a session. They are ours, set once at
+///   startup. Synchronized output is the exception, being about painting.
+/// - Erase display (`ESC [ 2 J`), which a starting renderer sends to get a clean canvas. Its
+///   canvas is the top `rows` rows; the transport bar below them is not mpv's to wipe.
+fn picture_only(stream: &[u8], rows: u16, out: &mut impl Write) -> io::Result<()> {
+    let (mut kept, mut at) = (0, 0);
+    while let Some(esc) = stream[at..].iter().position(|&b| b == ESC) {
+        let start = at + esc;
+        let end = start + escape_len(&stream[start..]).unwrap_or(stream.len() - start);
+        let seq = &stream[start..end];
+        let erase = seq == b"\x1b[2J";
+        let mode = seq.starts_with(b"\x1b[?")
+            && matches!(seq.last(), Some(b'h' | b'l'))
+            && seq != SYNC_BEGIN
+            && seq != SYNC_END;
+        if erase || mode {
+            out.write_all(&stream[kept..start])?;
+            if erase {
+                erase_rows(out, rows)?;
+            }
+            kept = end;
+        }
+        at = end;
+    }
+    out.write_all(&stream[kept..])
 }
 
 /// Longest prefix of `buf` that can be painted on its own, i.e. that leaves no escape sequence and
@@ -164,5 +292,22 @@ mod tests {
             assert_eq!(painted, stream, "step {step} lost or reordered bytes");
             assert!(pending.is_empty(), "step {step} stranded a tail");
         }
+    }
+
+    #[test]
+    fn mpv_paints_its_picture_and_does_not_get_to_run_the_terminal() {
+        // What a renderer writes over its life, as mpv 0.42 sends it: modes on and a wipe,
+        // frames, modes off. Only the frame may reach the screen as written - the wipe is cut
+        // down to the picture's rows, and the modes are not mpv's to set at all. The last of
+        // them, left in, puts the user back on their shell's screen mid-session.
+        let frame = "\x1b[?2026h\x1b[1;1f\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m\u{2584}\x1b[0m\x1b[24;1f\x1b[?2026l";
+        let stream =
+            format!("\x1b[?1003h\x1b[?25l\x1b[?1049h\x1b[2J{frame}\x1b[?1003l\x1b[?25h\x1b[?1049l");
+        let mut painted = Vec::new();
+        picture_only(stream.as_bytes(), 24, &mut painted).unwrap();
+        assert_eq!(
+            String::from_utf8(painted).unwrap(),
+            format!("\x1b[0m\x1b[24;999H\x1b[1J{frame}")
+        );
     }
 }

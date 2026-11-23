@@ -5,15 +5,18 @@
 
 pkgname=ytmplayer-bin
 _pkgname=ytmplayer
-pkgver=3.0.0
+pkgver=3.1.0
 pkgrel=1
 pkgdesc="Terminal YouTube player: audio in a text UI, true-colour ASCII video on demand, background downloads"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Osyna/YTM-Player"
 license=('PolyForm-Noncommercial-1.0.0')
-depends=('mpv' 'yt-dlp')
-optdepends=('ffmpeg: merge separate video and audio streams when downloading above MP3'
-            'curl: read Spotify links (track and playlist names come from the public embed page)')
+# curl fetches and updates the player's own yt-dlp, so yt-dlp itself is optional: the
+# system's copy is used while it is current, and a newer one is downloaded when it is not.
+depends=('mpv' 'curl')
+optdepends=('yt-dlp: used instead of a downloaded copy for as long as it is the latest release'
+            'deno: the JavaScript runtime yt-dlp needs for YouTube'
+            'ffmpeg: save tracks, read covers and tags, measure tempo for beat mixing')
 provides=("$_pkgname=$pkgver")
 conflicts=("$_pkgname")
 # The binary is statically linked against musl and already stripped.
@@ -27,8 +30,12 @@ sha256sums_aarch64=('SKIP')
 package() {
     cd "$srcdir/$_pkgname-$pkgver-$CARCH-linux"
     install -Dm755 "$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+    install -Dm644 "$_pkgname.1" "$pkgdir/usr/share/man/man1/$_pkgname.1"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
     install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$_pkgname/CHANGELOG.md"
+    install -Dm644 WRITING-TRANSITIONS.md "$pkgdir/usr/share/doc/$_pkgname/WRITING-TRANSITIONS.md"
+    # Embedded in the binary; installed as well so there is something to copy and edit.
+    install -Dm644 -t "$pkgdir/usr/share/$_pkgname/transitions" transitions/*.mix
     # Arch looks for the licence under $pkgname, not the binary name.
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

@@ -1,0 +1,391 @@
+.\" Manual page for ytmplayer. Plain man(7) macros, so groff and mandoc both render it.
+.\" Options listed here are the ones `ytmplayer --help` prints (USAGE in src/main.rs);
+.\" a flag added to one belongs in the other.
+.TH YTMPLAYER 1 2026-11-21 ytmplayer "User Commands"
+.SH NAME
+ytmplayer \- terminal music player for YouTube, SoundCloud, Spotify links and local files
+.SH SYNOPSIS
+.B ytmplayer
+.RB [ \-\-shuffle ]
+.RB [ \-\-volume
+.IR level ]
+.RB [ \-\- ]
+.RI [ url " | " path " | " "search words" ...]
+.br
+.B ytmplayer
+.BR \-h " | " \-\-help
+.br
+.B ytmplayer
+.BR \-V " | " \-\-version
+.SH DESCRIPTION
+.B ytmplayer
+plays audio in a full-screen, fully clickable text interface, with a play queue,
+live audio scopes, an effects rack, an equalizer, beat-matched transitions, a local
+library, background downloads, and the video itself as true-colour ASCII on demand.
+It drives
+.BR mpv (1)
+for playback and
+.BR yt\-dlp (1)
+for resolving links.
+.PP
+The one argument says what to play:
+.TP
+.I url
+A YouTube or SoundCloud track, playlist, album, set or station, or a Spotify
+track, album or playlist.
+Spotify audio is never streamed: each track is matched on YouTube by name.
+Quote a URL that contains
+.BR & ,
+or the shell will cut it there.
+.TP
+.I path
+A media file, a folder, or an
+.BR .m3u ", " .m3u8 " or " .pls
+list.
+A folder is played with everything beneath it, in path order, so albums stay
+together and in track order.
+Hidden files and folders are skipped.
+A leading
+.B ~
+is expanded.
+Anything that begins with
+.BR / ", " ~ ", " ./ " or " ../
+is taken for a path whether or not it exists, and one that is not there is an
+error rather than a search.
+.TP
+.I search words
+Anything that is neither a link nor a path is searched for on YouTube.
+The first hit plays and the rest wait in the queue.
+Several words need no quotes:
+.B ytmplayer boards of canada roygbiv
+is one search.
+.PP
+With no argument
+.B ytmplayer
+opens a URL bar: type or paste a link, a path or a search there, or press
+.B Tab
+to resume the previous session where it stopped.
+.PP
+A session started with an argument ends when its queue runs out.
+One started bare stays open until it is quit.
+.SH OPTIONS
+.TP
+.B \-\-shuffle
+Start with the queue in a random order.
+.TP
+.BI \-\-volume " level"
+Starting volume, from 0 to 150.
+100 is the track's own level.
+.TP
+.BR \-h ", " \-\-help
+Print a summary of the options and keys on standard output and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version on standard output and exit.
+.TP
+.B \-\-
+End of options.
+Whatever follows is the thing to play, even if it begins with a dash.
+.PP
+An option that is not one of these is an error:
+the usage is printed on standard error and nothing is played.
+.SH KEYS
+Every key shown on screen in parentheses is also a button.
+.SS Main view
+.PD 0
+.TP 22
+.B Space
+Play or pause.
+.TP
+.BR h ", " l " or " Left ", " Right
+Seek back or forward 5 seconds.
+.TP
+.BR j ", " k " or " Down ", " Up
+Volume down or up.
+.TP
+.BR n ", " b
+Next or previous track.
+.TP
+.B v
+Choose what the centre panel shows: queue, scope, video or library.
+.TP
+.B p
+Show the queue there straight away.
+.TP
+.B o
+Add a link, a path or a search; it plays after the current track.
+.TP
+.B d
+Save the current track into
+.IR downloads/ .
+Pressing it again cancels.
+.TP
+.B e
+Effects rack.
+.TP
+.B g
+Equalizer.
+.TP
+.B s
+Settings.
+.TP
+.BR q " or " Ctrl+C
+Quit.
+.PD
+.SS Queue in the centre panel
+.PD 0
+.TP 22
+.BR Up ", " Down ", " PgUp ", " PgDn
+Move the cursor.
+.TP
+.B Enter
+Play the selected track.
+.TP
+.B E
+Reorder mode;
+.BR J " and " K
+then move the selected track down or up.
+.TP
+.B a
+Save the whole queue.
+Pressing it again cancels.
+.PD
+.SS Library in the centre panel
+.PD 0
+.TP 22
+.B /
+Filter as you type;
+.B Esc
+leaves the filter.
+.TP
+.BR Up ", " Down ", " PgUp ", " PgDn
+Move the cursor.
+.TP
+.B Enter
+Play the selected track next.
+.TP
+.B +
+Add it to the end of the queue instead.
+.TP
+.B R
+Index
+.I ~/Music
+and
+.IR downloads/ .
+.TP
+.B A
+Add another folder to the index.
+.PD
+.SS View chooser
+.PD 0
+.TP 22
+.BR j ", " k
+Move.
+.TP
+.BR Enter " or " Space
+Show the selected panel.
+.TP
+.BR h ", " l
+Change the style of the scope.
+.TP
+.BR v " or " Esc
+Back out, leaving the panel as it was.
+.PD
+.SS Settings, effects and equalizer
+.PD 0
+.TP 22
+.BR j ", " k
+Move.
+.TP
+.BR h ", " l
+Change the selected setting.
+.TP
+.BR Enter " or " Space
+Switch the selected effect, or apply the selected equalizer preset.
+.TP
+.BR q ", " Esc
+Close.
+Settings are saved on the way out.
+.PD
+.SS URL bar
+.PD 0
+.TP 22
+.B Enter
+Open what was typed.
+.TP
+.B Tab
+Resume the previous session.
+.TP
+.B Esc
+Cancel; on the opening screen, quit.
+.PD
+.SH MOUSE
+The progress bar seeks where it is clicked.
+The volume rail on the right sets the level where it is clicked.
+Queue rows jump to their track.
+Clicking the centre panel steps it to the next view.
+The wheel scrolls the queue when the pointer is over it, and turns the volume
+everywhere else.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/ytmplayer/config
+Settings, as
+.IB key = value
+lines, written by the settings view.
+.I ~/.config
+is used when
+.B XDG_CONFIG_HOME
+is not set.
+.TP
+.I $XDG_CONFIG_HOME/ytmplayer/transitions/*.mix
+Your own transitions.
+The format is described in
+.IR WRITING\-TRANSITIONS.md ,
+and the built-in ones are installed as examples in
+.IR /usr/share/ytmplayer/transitions/ .
+.TP
+.I $XDG_STATE_HOME/ytmplayer/
+What the player remembers: where the last session stopped, what has been played,
+the library index, measured tempos, and where saved tracks went.
+.I ~/.local/state
+is used when
+.B XDG_STATE_HOME
+is not set.
+Removing the directory resets all of it.
+.TP
+.I $XDG_STATE_HOME/ytmplayer/bin/yt\-dlp
+The player's own copy of
+.BR yt\-dlp ,
+when it holds one.
+See
+.BR "KEEPING YT\-DLP CURRENT" .
+.TP
+.I ./downloads/
+Saved tracks, in the directory
+.B ytmplayer
+was started from.
+.SH KEEPING YT\-DLP CURRENT
+Sites change what they serve every few weeks,
+.B yt\-dlp
+follows within days, and a copy that is months old stops resolving links.
+So the first time a session needs
+.B yt\-dlp
+\(en at most once a day, and never for a session that only plays local files \(en
+.B ytmplayer
+asks GitHub which release is the latest.
+When neither the installed
+.B yt\-dlp
+nor the player's own copy is that recent, it downloads the release with
+.BR curl (1)
+into the state directory, checks it against the checksum the release publishes
+(with
+.BR sha256sum (1)
+or
+.BR shasum (1))
+and that it runs, and uses it from then on,
+for its own lookups and for
+.BR mpv 's.
+.PP
+A machine with no
+.B yt\-dlp
+at all is given one the same way.
+Once the system's own
+.B yt\-dlp
+has caught up, the player's copy is deleted and the system's is used again.
+If the check or the download fails \(en no network, no
+.B curl
+\(en whatever
+.B yt\-dlp
+already worked keeps being used.
+.PP
+The small release file needs Python 3; without one the larger self-contained
+build is fetched instead.
+.SH ENVIRONMENT
+.TP
+.B XDG_CONFIG_HOME
+Where the settings and your transitions live.
+Default
+.IR ~/.config .
+.TP
+.B XDG_STATE_HOME
+Where history, the resume point, the library index and the player's
+.B yt\-dlp
+live.
+Default
+.IR ~/.local/state .
+.TP
+.B PATH
+Searched for
+.BR mpv ", " yt\-dlp ", " ffmpeg ", " ffprobe ", " curl ", " sha256sum " and " shasum .
+.TP
+.BR TERM ", " TERM_PROGRAM ", " KITTY_WINDOW_ID ", " TMUX
+Decide how cover art is drawn: as a real picture on terminals that implement
+the kitty graphics protocol, and as coloured half-blocks everywhere else,
+including inside
+.BR tmux (1).
+.TP
+.B DBUS_SESSION_BUS_ADDRESS
+The session bus the player registers on, so media keys and
+.BR playerctl (1)
+can control it.
+Without a session bus that integration is simply absent.
+.SH REQUIREMENTS
+.TP
+.BR mpv (1)
+Required.
+It decodes and plays everything.
+.TP
+.BR yt\-dlp (1)
+Required for links and searches, not for local files.
+Fetched and updated automatically, as described above.
+For YouTube it needs a JavaScript runtime of its own;
+.BR deno (1)
+is the one it looks for by default.
+.TP
+.BR curl (1)
+Fetches
+.B yt\-dlp
+and reads Spotify links.
+.TP
+.BR ffmpeg "(1), " ffprobe (1)
+Optional.
+Saving tracks as MP3 or above, cover art, the library's tags, and the
+measurements beat-matched transitions rely on.
+.PP
+The terminal needs true colour for the scopes and the video, and should be at
+least 44 columns by 20 rows for them; smaller terminals get the text interface
+without them.
+.SH EXIT STATUS
+.TP
+.B 0
+The session ended normally, or
+.B \-\-help
+or
+.B \-\-version
+was asked for.
+.TP
+.B 1
+Something could not be played or started:
+an unknown option, a path that does not exist, a link that did not resolve,
+a missing program, or output that is not a terminal.
+The reason is printed on standard error.
+.SH EXAMPLES
+.nf
+.RS
+ytmplayer "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+ytmplayer boards of canada roygbiv
+ytmplayer ~/Music \-\-shuffle
+ytmplayer \-\-volume 60 "https://soundcloud.com/artist/sets/album"
+ytmplayer "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+ytmplayer
+.RE
+.fi
+.SH BUGS
+Report them at
+.IR https://github.com/Osyna/YTM\-Player/issues .
+.SH SEE ALSO
+.BR mpv (1),
+.BR yt\-dlp (1),
+.BR ffmpeg (1),
+.BR curl (1),
+.BR playerctl (1)

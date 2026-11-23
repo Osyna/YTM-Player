@@ -4,6 +4,7 @@
 
 use crate::settings::{SaveFormat, Settings};
 use crate::spotify;
+use crate::ytdlp;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -13,7 +14,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long a finished-looking yt-dlp gets to actually exit before it is killed.
 /// Its stdout has already closed by then, so anything still running is wedged - a stuck
@@ -67,9 +68,18 @@ impl SourceKind {
     }
 }
 
-/// Classify before resolving: an existing path is local, everything else by host.
+/// What a shell would call a path, whether or not anything is there.
+fn looks_like_path(text: &str) -> bool {
+    text.starts_with(['/', '~']) || text.starts_with("./") || text.starts_with("../")
+}
+
+/// Classify before resolving: a path is local, everything else by host.
+///
+/// A path that does not exist is still a path. Classed local, its failure is the
+/// filesystem's own "No such file or directory"; handed to yt-dlp it came back as
+/// "not a valid URL", which sent people looking for a problem with their link.
 pub fn kind_of(url: &str) -> SourceKind {
-    if Path::new(url).exists() {
+    if looks_like_path(url) || Path::new(url).exists() {
         SourceKind::Local
     } else if spotify::is_spotify(url) {
         SourceKind::Spotify
@@ -114,11 +124,10 @@ pub fn as_target(text: &str) -> String {
     let looks_addressable = text.is_empty()
         || text.contains("://")
         || text.starts_with("www.")
-        || text.starts_with('/')
-        || text.starts_with("./")
-        || text.starts_with("../")
-        || text.starts_with('~')
-        || text.starts_with("yt")
+        // yt-dlp's own search prefixes - not every word that happens to begin with "yt".
+        || text.starts_with("ytsearch")
+        || spotify::is_spotify(text)
+        || looks_like_path(text)
         || Path::new(text).exists();
     if looks_addressable {
         text.to_string()
@@ -147,7 +156,7 @@ pub fn is_media_link(text: &str) -> bool {
 /// Run yt-dlp and hand back its stdout, turning any failure into a short human message.
 /// Every blocking yt-dlp call goes through here so they all fail the same readable way.
 fn run_ytdlp(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("yt-dlp")
+    let output = ytdlp::command()
         .args(args)
         .output()
         .map_err(|e| format!("can't run yt-dlp: {e}"))?;
@@ -165,7 +174,7 @@ fn run_ytdlp(args: &[&str]) -> Result<String, String> {
 /// returns 1, so a success-only contract would throw away every good line in the batch
 /// because of one private, deleted or geo-blocked track.
 fn ytdlp_partial(args: &[&str]) -> String {
-    Command::new("yt-dlp")
+    ytdlp::command()
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -280,13 +289,50 @@ pub fn live_format(height: Option<u16>) -> String {
     }
 }
 
+/// The `--print` template for when the streams just named will start being served: the
+/// format's own `available_at`, and the list of them when two formats were merged.
+const AVAILABLE_AT: &str = "%(available_at)s %(requested_formats.:.available_at)s";
+/// The longest [`hold_until_available`] will wait. The hold is the length of an advert;
+/// a clock that jumped must not be able to park the player for an hour.
+const MAX_HOLD: u64 = 30;
+
+/// Wait out YouTube's hold on freshly resolved streams.
+///
+/// A stream URL answers `403` until the moment yt-dlp reports as `available_at` - a few
+/// seconds after extraction, the advert a browser would be showing. yt-dlp's own
+/// downloader sleeps through it and mpv's hook (0.42 on) defers the load; a URL this
+/// player hands to mpv or ffmpeg itself has to be held back here, or its first request
+/// is refused and the track with it.
+///
+/// `line` is what [`AVAILABLE_AT`] printed: every number in it is a Unix time, and the
+/// latest of them is when all the streams are ready. A yt-dlp too old to know the field
+/// prints `NA`, and nothing is waited for.
+fn hold_until_available(line: &str) {
+    // A URL is full of numbers that are not this one (`expire=…` is hours away).
+    if line.contains("://") {
+        return;
+    }
+    let ready = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|number| number.parse::<u64>().ok())
+        .max();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if let Some(wait) = ready.and_then(|at| at.checked_sub(now)) {
+        std::thread::sleep(Duration::from_secs(wait.min(MAX_HOLD)));
+    }
+}
+
 /// Resolve a watch URL to direct stream URLs, in yt-dlp's merge order (video, then audio).
 ///
 /// This doubles as the validity check that used to be a separate `--simulate` call: an
 /// unplayable URL fails here, before mpv spawns, with the same clean one-line message. Handing
 /// mpv the result means its `ytdl_hook` never runs, so a track is extracted once, not twice.
+///
+/// Returns once the streams can actually be opened - see [`hold_until_available`].
 pub fn resolve_track(url: &str, format: &str) -> Result<Resolved, String> {
-    parse_resolved(&run_ytdlp(&[
+    let stdout = run_ytdlp(&[
         "-f",
         format,
         "--no-playlist",
@@ -295,23 +341,30 @@ pub fn resolve_track(url: &str, format: &str) -> Result<Resolved, String> {
         "%(title)s",
         "--print",
         "%(urls)s",
+        "--print",
+        AVAILABLE_AT,
         url,
-    ])?)
+    ])?;
+    let resolved = parse_resolved(&stdout)?;
+    hold_until_available(stdout.lines().last().unwrap_or_default());
+    Ok(resolved)
 }
 
-/// Split yt-dlp's two `--print` templates: the title, then one URL per stream it would have
+/// Split yt-dlp's `--print` templates: the title, then one URL per stream it would have
 /// merged. Two URLs mean separate video and audio; one means a muxed stream carrying both.
+/// Only a URL counts as a stream - the availability line that follows them is not one.
 fn parse_resolved(stdout: &str) -> Result<Resolved, String> {
     let mut lines = stdout.lines().filter(|l| !l.trim().is_empty());
     let title = lines.next().unwrap_or_default().to_string();
-    let video = lines
+    let mut streams = lines.filter(|l| l.contains("://"));
+    let video = streams
         .next()
         .ok_or_else(|| "yt-dlp returned no stream URL".to_string())?
         .to_string();
     Ok(Resolved {
         title,
         video,
-        audio: lines.next().map(str::to_string),
+        audio: streams.next().map(str::to_string),
     })
 }
 
@@ -436,21 +489,50 @@ const MEDIA_EXTS: &[&str] = &[
     "ogg", "opus", "wav", "webm", "wma",
 ];
 
+/// How far below the folder the walk goes. Artist/album/disc is three; a cap this far past
+/// that only exists so a pathological tree cannot wedge the launch.
+const MAX_FOLDER_DEPTH: usize = 12;
+
+/// Every media file under `root`, subfolders included, in path order - so an album plays in
+/// track order and an artist's albums stay together.
+///
+/// A music folder is artist/album deep: one that only plays its loose top-level files plays
+/// nothing at all. Hidden entries are skipped (trash, sync folders, the `._name.mp3` stubs
+/// macOS leaves on shared drives), and a symlinked folder is not followed, so a link back up
+/// the tree cannot loop.
+fn media_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut stack = vec![(std::fs::read_dir(root)?, 0)];
+    while let Some((entries, depth)) = stack.pop() {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                if depth < MAX_FOLDER_DEPTH
+                    && let Ok(inner) = std::fs::read_dir(&path)
+                {
+                    stack.push((inner, depth + 1));
+                }
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// Entries for a local path that expands to a list - a directory of media files or an
 /// `.m3u`/`.m3u8`/`.pls` - or `None` for a single playable file.
 fn local_entries(path: &Path) -> Result<Option<Vec<Entry>>, String> {
     if path.is_dir() {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(path)
-            .map_err(|e| format!("Can't read {}: {e}", path.display()))?
-            .filter_map(Result::ok)
-            .map(|d| d.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
-            })
-            .collect();
-        files.sort();
+        let files = media_files(path).map_err(|e| format!("Can't read {}: {e}", path.display()))?;
         if files.is_empty() {
             return Err(format!("No playable media files in {}.", path.display()));
         }
@@ -479,6 +561,11 @@ fn local_entries(path: &Path) -> Result<Option<Vec<Entry>>, String> {
         let entries = parse_playlist_text(&text, ext == "pls", dir);
         if entries.is_empty() {
             return Err(format!("{} lists no playable entries.", path.display()));
+        }
+        // A list of links never runs yt-dlp here - mpv's hook resolves each one as it
+        // loads - so this is the last chance to make sure there is one for it to find.
+        if entries.iter().any(|entry| !entry.titled) {
+            ytdlp::ensure();
         }
         return Ok(Some(entries));
     }
@@ -850,7 +937,7 @@ pub enum MediaUrl {
 /// what mpv does at load time - and one `--print` per field beats one process per field,
 /// the same trade `resolve_track` already makes for video mode.
 pub fn stream_media_url(page: &str) -> MediaUrl {
-    let out = Command::new("yt-dlp")
+    let out = ytdlp::command()
         .args([
             "-f",
             "bestaudio/best",
@@ -860,6 +947,8 @@ pub fn stream_media_url(page: &str) -> MediaUrl {
             "%(url)s",
             "--print",
             "%(thumbnail)s",
+            "--print",
+            AVAILABLE_AT,
             page,
         ])
         .stdin(Stdio::null())
@@ -874,6 +963,8 @@ pub fn stream_media_url(page: &str) -> MediaUrl {
             .next()
             .filter(|t| !t.is_empty() && *t != "NA")
             .map(str::to_string);
+        // ffmpeg is about to open this, and has no more patience for a 403 than mpv.
+        hold_until_available(lines.next().unwrap_or_default());
         return MediaUrl::Direct {
             url: url.to_string(),
             thumbnail,
@@ -1018,7 +1109,7 @@ fn spawn_search_resolver(pending: Vec<(usize, String)>) -> Receiver<ResolveEvent
             waiting.entry(query.clone()).or_default().push_back(*index);
         }
 
-        let mut cmd = Command::new("yt-dlp");
+        let mut cmd = ytdlp::command();
         cmd.args([
             "--flat-playlist",
             "--no-warnings",
@@ -1251,8 +1342,12 @@ pub fn save_recording(temp: &std::path::Path, title: &str, as_mp3: bool) -> Resu
 
 /// Run a command with its output discarded; true if it exited 0. Used for "is this installed"
 /// probes and for fire-and-forget ffmpeg work.
+///
+/// Its input is discarded too. A child left holding the terminal reads the keys meant for
+/// the player - ffmpeg takes `q` to mean stop - and can swallow the terminal's replies.
 pub fn succeeds(cmd: &mut Command) -> bool {
-    cmd.stdout(Stdio::null())
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
@@ -1328,7 +1423,7 @@ impl DownloadControl {
             }
 
             let ffmpeg = has_ffmpeg();
-            let mut cmd = Command::new("yt-dlp");
+            let mut cmd = ytdlp::command();
             cmd.args(spec.ytdlp_args(ffmpeg))
                 .args(if tag {
                     DownloadSpec::metadata_args(ffmpeg)
@@ -1338,6 +1433,7 @@ impl DownloadControl {
                 // A few parallel fragment connections noticeably speed up DASH downloads.
                 .args(["--concurrent-fragments", "4", "--newline"])
                 .args(["-o", "downloads/%(title)s.%(ext)s", &url])
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
             let mut child = match cmd.spawn() {
@@ -1571,6 +1667,47 @@ mod tests {
     }
 
     #[test]
+    fn the_availability_line_is_not_mistaken_for_a_stream() {
+        // What yt-dlp prints for one muxed stream: title, URL, then when it may be opened.
+        let r = parse_resolved("Title\nhttps://cdn/muxed\n1795280114 []\n").unwrap();
+        assert_eq!(r.video, "https://cdn/muxed");
+        assert_eq!(r.audio, None, "the availability line became the audio");
+    }
+
+    #[test]
+    fn a_stream_is_held_until_youtube_will_serve_it_and_no_longer() {
+        let started = Instant::now();
+        // Already available, unknown to an older yt-dlp, and a URL whose `expire=` is
+        // hours ahead: none of these is a reason to wait.
+        for line in [
+            "1000000000 []",
+            "NA [1000000000, 1000000001]",
+            "NA NA",
+            "",
+            "https://cdn/v?expire=99999999999",
+        ] {
+            hold_until_available(line);
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "held for nothing"
+        );
+
+        // Two seconds from now, as the merged-format list yt-dlp prints.
+        let soon = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2;
+        let started = Instant::now();
+        hold_until_available(&format!("NA [{soon}, {}]", soon - 1));
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "opened too early"
+        );
+    }
+
+    #[test]
     fn playlists_are_recognised_across_providers() {
         // YouTube lists, SoundCloud sets, and SoundCloud radio (stations / recommended).
         assert!(is_playlist("https://www.youtube.com/watch?v=x&list=RDx"));
@@ -1673,5 +1810,64 @@ mod tests {
             kind_of("https://www.youtube.com/watch?v=x"),
             SourceKind::YouTube
         );
+    }
+
+    #[test]
+    fn a_path_that_is_not_there_is_still_a_path() {
+        // Issue #5: these went to yt-dlp, which called them invalid URLs.
+        for missing in ["/no/such/music/", "./nope.mp3", "../nope", "~/nope"] {
+            assert_eq!(kind_of(missing), SourceKind::Local, "{missing}");
+            let message = resolve_for_queue(missing).err().unwrap_or_default();
+            assert!(message.starts_with("Can't open"), "{missing}: {message}");
+        }
+    }
+
+    #[test]
+    fn typed_words_are_a_search_and_addresses_are_not() {
+        assert_eq!(
+            as_target("boards of canada roygbiv"),
+            "ytsearch12:boards of canada roygbiv"
+        );
+        // Beginning with "yt" does not make a phrase one of yt-dlp's search prefixes.
+        assert_eq!(as_target("yt music hits"), "ytsearch12:yt music hits");
+        for address in [
+            "https://youtu.be/x",
+            "ytsearch3:daft punk",
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            "/no/such/music/",
+            "~/Music",
+            "Cargo.toml",
+        ] {
+            assert_eq!(as_target(address), address);
+        }
+    }
+
+    #[test]
+    fn a_folder_plays_its_subfolders_in_path_order() {
+        let root = std::env::temp_dir().join(format!("ytmfolder_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for file in [
+            "B/Album/02 two.flac",
+            "B/Album/01 one.MP3",
+            "A/single.ogg",
+            "loose.mp3",
+            "A/cover.jpg",
+            ".trash/gone.mp3",
+            "A/._single.ogg",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+
+        let entries = local_entries(&root).unwrap().unwrap();
+        let titles: Vec<&str> = entries.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, ["single", "01 one", "02 two", "loose"]);
+
+        // A folder holding nothing playable says so instead of starting an empty session.
+        let empty = root.join("A/empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(local_entries(&empty).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

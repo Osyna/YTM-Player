@@ -19,6 +19,7 @@ mod tty;
 mod ui;
 mod visualizer;
 mod youtube;
+mod ytdlp;
 
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -55,9 +56,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const REDRAW_VIDEO: Duration = Duration::from_millis(40);
 const REDRAW_VIZ: Duration = Duration::from_millis(50);
 const REDRAW_TEXT: Duration = Duration::from_millis(200);
-
-/// mpv needs a moment to finish releasing the terminal after its `tct` output is destroyed.
-const TCT_TEARDOWN: Duration = Duration::from_millis(250);
 
 const SEEK_STEP: f64 = 5.0;
 
@@ -103,8 +101,13 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>, String> {
     let mut rest = argv.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
-            "-h" | "--help" => return Ok(None),
-            "--version" | "-V" => {
+            // Asked for, so each is the answer rather than a complaint: stdout, exit 0,
+            // and nothing else printed around it.
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(None);
+            }
+            "-V" | "--version" => {
                 println!("ytmplayer {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
@@ -136,14 +139,10 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>, String> {
 }
 
 fn run() -> AppResult<()> {
-    let program = std::env::args()
-        .next()
-        .unwrap_or_else(|| "ytmplayer".to_string());
-    let Some(args) = parse_args(std::env::args().skip(1).collect()).inspect_err(|_| {
-        display_usage(&program);
-    })?
+    // A flag that was not understood gets the usage on stderr, ahead of the error itself.
+    let Some(args) =
+        parse_args(std::env::args().skip(1).collect()).inspect_err(|_| eprint!("{USAGE}"))?
     else {
-        display_usage(&program);
         return Ok(());
     };
     let arg = args.target;
@@ -336,46 +335,59 @@ fn resolving_notice(target: &str) -> String {
     if youtube::is_playlist(target) {
         return "Resolving the playlist… (this one is yt-dlp's to answer)".to_string();
     }
+    if youtube::kind_of(target) == SourceKind::YouTube {
+        // The hold is YouTube's (see `youtube::hold_until_available`), and several
+        // seconds of nothing happening is worth one clause saying whose it is.
+        return format!("Resolving {target}… (YouTube holds a new stream back a few seconds)");
+    }
     format!("Resolving {target}…")
 }
 
-fn display_usage(program: &str) {
-    eprintln!("Usage: {program} [OPTIONS] [URL | PATH | SEARCH…]");
-    eprintln!();
-    eprintln!("Plays audio from YouTube, SoundCloud, or Spotify (Spotify tracks are matched");
-    eprintln!("on YouTube), and local files. Accepts a single track or video, a playlist,");
-    eprintln!("album, set, or SoundCloud station, a media file, a folder, or an .m3u/.pls list.");
-    eprintln!("Anything that is neither a link nor a path is searched for on YouTube, and the");
-    eprintln!("hits land in the queue. Started bare, it opens a URL bar - paste or type there.");
-    eprintln!();
-    eprintln!("Options: --shuffle          start with the queue in a random order");
-    eprintln!("         --volume <0-150>   starting volume");
-    eprintln!("         --version, --help");
-    eprintln!();
-    eprintln!("  {program} \"https://youtu.be/…\"      {program} ~/Music      {program} daft punk");
-    eprintln!();
-    eprintln!("Controls: [Space] play/pause  [h][l] seek 5s  [j][k] volume  [n][b] next/prev");
-    eprintln!("          [v] view: queue, scope or ASCII video in the centre panel");
-    eprintln!("          [p] queue  [o] add a link  [s] settings  [e] effects");
-    eprintln!("          [d] download  [q] quit");
-    eprintln!("          Queue panel: [↑][↓] select  [Enter] play  [E] reorder  [a] save all");
-    eprintln!("          Every labelled (key) is clickable; clicking the panel changes it.");
-}
+/// `--help`, and what a mistyped flag is answered with. `ytmplayer(1)` says the same at
+/// more length; a flag added here belongs there too.
+const USAGE: &str = "\
+Usage: ytmplayer [OPTIONS] [URL | PATH | SEARCH…]
+
+Plays audio from YouTube, SoundCloud, or Spotify (Spotify tracks are matched
+on YouTube), and local files. Accepts a single track or video, a playlist,
+album, set, or SoundCloud station, a media file, a folder, or an .m3u/.pls list.
+Anything that is neither a link nor a path is searched for on YouTube, and the
+hits land in the queue. Started bare, it opens a URL bar - paste or type there.
+
+Options:
+      --shuffle          start with the queue in a random order
+      --volume <0-150>   starting volume
+  -h, --help             print this help and exit
+  -V, --version          print the version and exit
+
+Examples:
+  ytmplayer \"https://youtu.be/…\"
+  ytmplayer ~/Music --shuffle
+  ytmplayer daft punk
+
+Controls: [Space] play/pause  [h][l] seek 5s  [j][k] volume  [n][b] next/prev
+          [v] view: queue, scope or ASCII video in the centre panel
+          [p] queue  [o] add a link  [s] settings  [e] effects
+          [d] download  [q] quit
+          Queue panel: [↑][↓] select  [Enter] play  [E] reorder  [a] save all
+          Every labelled (key) is clickable; clicking the panel changes it.
+
+See ytmplayer(1) for every key, the files it keeps, and what it needs installed.
+";
 
 /// `Some(kind)` for a URL launch (local files play without yt-dlp), `None` for a bare
 /// launch, where only mpv is needed until a link is opened.
+///
+/// yt-dlp is not merely looked for: a URL launch is where the day's update check runs,
+/// and where a machine with none installed is given one.
 fn check_dependencies(kind: Option<SourceKind>) -> AppResult<()> {
-    let deps: &[&str] = match kind {
-        Some(SourceKind::Local) | None => &["mpv"],
-        Some(_) => &["yt-dlp", "mpv"],
-    };
-    for dep in deps {
-        if !youtube::succeeds(Command::new(dep).arg("--version")) {
-            return Err(format!(
-                "{dep} is not installed or not on PATH. Please install it and try again."
-            )
-            .into());
-        }
+    let missing =
+        |dep| format!("{dep} is not installed or not on PATH. Please install it and try again.");
+    if !youtube::succeeds(Command::new("mpv").arg("--version")) {
+        return Err(missing("mpv").into());
+    }
+    if !matches!(kind, Some(SourceKind::Local) | None) && !ytdlp::ensure_announced() {
+        return Err(missing("yt-dlp").into());
     }
     Ok(())
 }
@@ -1572,6 +1584,11 @@ impl Player {
             self.toast = None;
             self.dirty = true;
         }
+        // A yt-dlp update that ran on a worker thread has no screen to write to; this is
+        // where what it did gets said.
+        if let Some(note) = ytdlp::take_notice() {
+            self.show_toast(format!("⇣ {note}"));
+        }
 
         // A finished single download lingers a few seconds, then steps aside. Batch
         // outcomes are acknowledged by the queue instead.
@@ -2221,21 +2238,22 @@ impl Player {
         });
         if self.cover_needs_clear {
             self.cover_needs_clear = false;
-            self.tui.clear()?;
+            ui::invalidate(&mut self.tui);
         }
         let map = ui::draw(&mut self.tui, &state, viz_pair)?;
         self.paint_cover(&map);
         self.click_map = map;
-        Ok(())
+        self.term.commit()
     }
 
     /// Put the cover picture in the box the layout left for it.
     ///
-    /// After the frame, because a picture is not made of cells: it is an escape sequence
-    /// addressed to absolute coordinates, and it has to land on a rectangle that has
-    /// already been painted. The layout leaves that rectangle blank, so the frame diffing
-    /// that follows has nothing to say about those cells and will not paint over it -
-    /// which is also why this only re-emits when the box moves rather than every frame.
+    /// After the frame's cells, because a picture is not made of cells: it is an escape
+    /// sequence addressed to absolute coordinates, and it has to land on a rectangle that
+    /// has already been painted - and in the same frame as them, so the two reach the
+    /// screen together. The layout leaves that rectangle blank, so the frame diffing that
+    /// follows has nothing to say about those cells and will not paint over it - which is
+    /// also why this only re-emits when the box moves rather than every frame.
     fn paint_cover(&mut self, map: &ui::ClickMap) {
         let Some(art) = &self.cover else {
             self.cover_drawn = None;
@@ -2255,10 +2273,17 @@ impl Player {
             return;
         }
         // One-based and absolute, which is what the escape wants.
-        let _ = self
-            .term
-            .paint(art.escape_sequence(col + 1, row + 1).as_bytes());
+        self.term
+            .queue(art.escape_sequence(col + 1, row + 1).as_bytes());
         self.cover_drawn = Some((col, row));
+    }
+
+    /// Have the next frame clear the screen and repaint all of it - see [`ui::invalidate`].
+    fn invalidate(&mut self) {
+        ui::invalidate(&mut self.tui);
+        // The clear takes the cover with it, so it has to be sent again.
+        self.cover_drawn = None;
+        self.dirty = true;
     }
 
     // -- input ---------------------------------------------------------------------------
@@ -2271,15 +2296,19 @@ impl Player {
             self.disable_video()?;
             self.show_toast("▣ video off: terminal too small".to_string());
         } else if self.video_mode {
-            // A plain property change doesn't re-layout an already-streaming tct output - this
-            // forces a reinit, which also drops and re-enters our alt screen and mouse capture,
-            // so reassert those right after.
-            let _ = self.mpv.resync_tct_geometry(cols, ui::video_rows(rows));
-            ui::reassert_terminal(&self.term)?;
+            // mpv's renderer reads its size once, when it starts, so a new size means a new
+            // renderer. What the old one has already written is laid out for a screen that
+            // no longer exists, and the door stays shut on it until that one has stopped.
+            let picture = ui::video_rows(rows);
+            self.term.close_video();
+            let _ = self.mpv.set_video_enabled(false);
+            let _ = self.mpv.set_tct_geometry(cols, picture);
+            self.term.open_video(picture)?;
+            let _ = self.mpv.set_video_enabled(true);
+            self.dirty = true;
+        } else {
+            self.invalidate();
         }
-        ui::clear_screen(&self.term)?;
-        let _ = self.tui.clear();
-        self.dirty = true;
         Ok(())
     }
 
@@ -2692,8 +2721,7 @@ impl Player {
             self.disable_video()?;
         }
         self.view = view;
-        let _ = self.tui.clear();
-        self.dirty = true;
+        self.invalidate();
         Ok(())
     }
 
@@ -2707,8 +2735,7 @@ impl Player {
             return self.close_menu();
         }
         self.view = View::Main;
-        let _ = self.tui.clear();
-        self.dirty = true;
+        self.invalidate();
         // Settings and effects tear the picture down on the way in; put it back.
         self.apply_pane()
     }
@@ -2724,8 +2751,7 @@ impl Player {
         }
         self.menu_cursor = self.pane.index();
         self.view = View::Menu;
-        let _ = self.tui.clear();
-        self.dirty = true;
+        self.invalidate();
         Ok(())
     }
 
@@ -2733,8 +2759,7 @@ impl Player {
     /// picture when that pane is video.
     fn close_menu(&mut self) -> io::Result<()> {
         self.view = View::Main;
-        let _ = self.tui.clear();
-        self.dirty = true;
+        self.invalidate();
         self.apply_pane()
     }
 
@@ -2830,13 +2855,11 @@ impl Player {
                     // and that frame went out through the video-mode painter - rows ratatui
                     // has no record of. The text UI has to start from a clean screen or it
                     // leaves half a video bar stranded under itself.
-                    ui::clear_screen(&self.term)?;
-                    let _ = self.tui.clear();
+                    self.invalidate();
                     self.show_toast("▣ no video for this track".to_string());
                     self.dirty = true;
                     return Ok(());
                 }
-                ui::clear_screen(&self.term)?;
                 self.dirty = true;
             }
             (pane, true) if pane != Pane::Video => self.disable_video()?,
@@ -3251,16 +3274,13 @@ impl Player {
 
     // -- video (the tct output) and scopes -------------------------------------------------
 
-    /// Tear the picture down and take the terminal back. mpv's `tct` output resets alt screen,
-    /// cursor and mouse reporting as it goes, so that has to land before we redraw over it.
+    /// Take the screen back from the picture. The door is shut on mpv's output first, so
+    /// what its renderer writes on the way out is discarded instead of waited for.
     fn disable_video(&mut self) -> io::Result<()> {
         self.video_mode = false;
+        self.term.close_video();
         let _ = self.mpv.set_video_enabled(false);
-        std::thread::sleep(TCT_TEARDOWN);
-        ui::reassert_terminal(&self.term)?;
-        ui::clear_screen(&self.term)?;
-        let _ = self.tui.clear();
-        self.dirty = true;
+        self.invalidate();
         Ok(())
     }
 
@@ -3280,18 +3300,32 @@ impl Player {
     /// Bring the picture up: reserve the rows first so mpv's very first frame already
     /// respects them, make sure a track at the selected height exists, then select it.
     fn enable_video(&mut self) -> bool {
-        let _ = self
-            .mpv
-            .set_tct_geometry(self.term_cols, ui::video_rows(self.term_rows));
-        self.ensure_video_track() && self.mpv.set_video_enabled(true).is_ok()
+        let picture = ui::video_rows(self.term_rows);
+        let _ = self.mpv.set_tct_geometry(self.term_cols, picture);
+        // Opened before a track is selected: selecting one is what starts the renderer, and
+        // the first thing a renderer writes is what clears its canvas.
+        let up = self.term.open_video(picture).is_ok()
+            && self.ensure_video_track()
+            && self.mpv.set_video_enabled(true).is_ok();
+        if !up {
+            self.term.close_video();
+        }
+        up
     }
 
     /// Make sure mpv owns a video track at the selected height. False when there is no
     /// picture to show, which leaves the session audio-only rather than staring at a
     /// blank screen.
     fn ensure_video_track(&mut self) -> bool {
+        let url = self.source.track_url(self.entry_index());
+        // A file on disk carries its picture or has none, opened alone or as one of a
+        // folder: there is no second stream to resolve, and nothing yt-dlp could say
+        // about a path.
+        if youtube::kind_of(&url) == SourceKind::Local {
+            return self.mpv.has_video_track();
+        }
         if self.video_is_muxed {
-            return self.source.kind != SourceKind::Local || self.mpv.has_video_track();
+            return true;
         }
         let wanted = self.settings.quality.height();
         if self.video_track_loaded && self.video_height == wanted {
@@ -3300,7 +3334,6 @@ impl Player {
         if self.video_url.is_none() || self.video_height != wanted {
             self.loading_until = Some(Instant::now() + LOADING_HINT);
             let _ = self.render();
-            let url = self.source.track_url(self.entry_index());
             let Ok(track) = youtube::resolve_track(&url, &youtube::live_format(wanted)) else {
                 return false;
             };
