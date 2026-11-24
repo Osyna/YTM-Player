@@ -87,6 +87,7 @@ fn the_beat_mixing_switch_actually_switches() {
             .find(|line| line.contains("Beat mixing"))
             .is_some_and(|line| line.contains("Off"))
     }));
+    pty.key("s"); // In Settings, q closes the view rather than quitting.
     pty.quit();
 }
 
