@@ -33,7 +33,8 @@ jobs:
       - name: Configure clocked headless audio
         run: |
           mkdir -p "$RUNNER_TEMP/mpv"
-          printf 'ao=null\n' > "$RUNNER_TEMP/mpv/mpv.conf"
+          # Keep null-device buffering below the phase test's timing budget.
+          printf 'ao=null\nao-null-outburst=64\nao-null-buffer=0.02\naudio-buffer=0.02\n' > "$RUNNER_TEMP/mpv/mpv.conf"
           echo "MPV_HOME=$RUNNER_TEMP/mpv" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/xdg-runtime"
           chmod 700 "$RUNNER_TEMP/xdg-runtime"
