@@ -174,7 +174,13 @@ impl Pty {
     /// the terminal's buffer is full, and one that is blocked never gets as far as exiting.
     pub fn quit(&mut self) {
         self.key("q");
+        let deadline = Instant::now() + Duration::from_secs(8);
         while matches!(self.child.try_wait(), Ok(None)) {
+            assert!(
+                Instant::now() < deadline,
+                "player did not exit after q:\n{}",
+                self.screen.text()
+            );
             self.pump(Duration::from_millis(50));
         }
     }
